@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Vastora.API/Vastora.API.csproj" />
+    <Project Path="src/Vastora.Application/Vastora.Application.csproj" />
+    <Project Path="src/Vastora.Domain/Vastora.Domain.csproj" />
+    <Project Path="src/Vastora.Infrastructure/Vastora.Infrastructure.csproj" />
+  </Folder>
+</Solution>

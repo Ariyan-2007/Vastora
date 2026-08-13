@@ -39,6 +39,10 @@ ScaffoldingReadMe.txt
 # dotenv environment variables file
 .env
 
+# Legacy reference project archive (large binary, not source)
+Antivaly-main.zip
+*.bacpac
+
 # Others
 ~$*
 *~

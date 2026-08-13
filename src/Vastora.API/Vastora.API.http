@@ -1,0 +1,6 @@
+@Vastora.API_HostAddress = http://localhost:5276
+
+GET {{Vastora.API_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
