@@ -9,6 +9,7 @@ using Vastora.Domain.Enums;
 namespace Vastora.API.Controllers;
 
 /// <summary>Public storefront browsing — the Shop. No authentication required.</summary>
+[Tags("Shop - Catalog")]
 [Route("api/shop/{businessSlug}")]
 [AllowAnonymous]
 public class ShopCatalogController(

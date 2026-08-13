@@ -7,6 +7,7 @@ using Vastora.Domain.Enums;
 namespace Vastora.API.Controllers;
 
 /// <summary>A Customer's cart on their own Business — scope comes entirely from the JWT, never the route.</summary>
+[Tags("Shop - Cart")]
 [Route("api/shop/cart")]
 [Authorize(Roles = nameof(UserRole.Customer))]
 public class ShopCartController(ICurrentUserContext currentUser, ICartService cartService) : VastoraControllerBase(currentUser)

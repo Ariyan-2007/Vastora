@@ -1,7 +1,11 @@
+using System.Reflection;
 using System.Text;
+using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi;
+using Vastora.API.Authorization;
 using Vastora.API.Middleware;
 using Vastora.Application;
 using Vastora.Infrastructure;
@@ -34,11 +38,23 @@ if (!string.IsNullOrWhiteSpace(mongoConnectionString))
     builder.Configuration["MongoDb:ConnectionString"] = mongoConnectionString;
 }
 
-builder.Services.AddControllers();
+builder.Services.AddControllers()
+    .AddJsonOptions(options =>
+    {
+        // Enums cross the wire as readable names ("TenantOwner") instead of raw ints (2) —
+        // both in responses and in request bodies (e.g. the bare-enum PATCH .../status endpoints).
+        options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter());
+    });
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
 {
-    options.SwaggerDoc("v1", new OpenApiInfo { Title = "Vastora API", Version = "v1" });
+    options.SwaggerDoc("v1", new OpenApiInfo
+    {
+        Title = "Vastora API",
+        Version = "v1",
+        Description = "Multi-tenant e-commerce platform API — Platform, SuperOffice, BackOffice and Shop endpoints. " +
+                      "See VASTORA_BLUEPRINT.md and docs/*_BLUEPRINT.md in the repo for full context."
+    });
 
     options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
     {
@@ -53,6 +69,12 @@ builder.Services.AddSwaggerGen(options =>
     {
         [new OpenApiSecuritySchemeReference("Bearer", null)] = []
     });
+
+    var xmlFile = Path.Combine(AppContext.BaseDirectory, $"{Assembly.GetExecutingAssembly().GetName().Name}.xml");
+    if (File.Exists(xmlFile))
+    {
+        options.IncludeXmlComments(xmlFile);
+    }
 });
 
 builder.Services.AddApplication();
@@ -76,7 +98,14 @@ builder.Services
             ClockSkew = TimeSpan.FromSeconds(30)
         };
     });
-builder.Services.AddAuthorization();
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddScoped<IAuthorizationHandler, BusinessAccessAuthorizationHandler>();
+builder.Services.AddAuthorization(options =>
+{
+    // Resource-based scoping for every {businessId}-rooted route — see
+    // BusinessAccessAuthorizationHandler for exactly what each role is allowed to touch.
+    options.AddPolicy("BusinessMember", policy => policy.Requirements.Add(new BusinessMemberRequirement()));
+});
 
 const string CorsPolicy = "VastoraCors";
 builder.Services.AddCors(options =>

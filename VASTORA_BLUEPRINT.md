@@ -115,17 +115,24 @@ every service method takes the caller's `tenantId`/`businessId` (resolved from t
 `ICurrentUserContext`, never trusted from the URL for self-scoped roles) and filters or
 verifies against it before returning or mutating anything.
 
-`VastoraControllerBase.EnsureBusinessAccessAsync(businessId, businessService)` is the one
-chokepoint that turns "which Business is this request allowed to touch" into a `TenantId`,
-for every BackOffice-shaped controller:
+Every BackOffice-shaped controller carries `[Authorize(Policy = "BusinessMember")]`, backed by
+`BusinessAccessAuthorizationHandler` (`Vastora.API/Authorization/`) — a real ASP.NET Core
+`AuthorizationHandler<BusinessMemberRequirement>` that runs during `UseAuthorization()`, before
+the action executes. It reads the request's `{businessId}` route value and decides:
 
 - `BusinessAdmin` / `BusinessStaff` / `DeliveryAgent` → only their own `BusinessId` (from JWT).
 - `TenantOwner` → any Business that belongs to their own `TenantId` (SuperOffice).
 - `PlatformSuperAdmin` → any Business at all.
 
-This is a manual, per-request check rather than a full custom `IAuthorizationHandler` /
-resource-based policy — intentionally, to keep the foundation simple. See Roadmap §9.2 for
-the follow-up.
+A denied check for the first group simply never calls `context.Succeed()`, which the framework
+turns into a 403. A `TenantOwner`/`PlatformSuperAdmin` pointing at a Business that doesn't
+exist or isn't theirs lets `NotFoundException` propagate out of the handler and through
+`ExceptionHandlingMiddleware` as a 404 — deliberately indistinguishable from "doesn't exist."
+On success, the handler stashes the Business's real `TenantId` on `HttpContext.Items` (via
+`HttpContextTenantExtensions`), which controllers read back through the synchronous
+`VastoraControllerBase.ResolvedTenantId` property — no second lookup, no imperative call at
+the top of every action. (This replaced an earlier version that did the same check manually
+inside each action; see Progress Log, 2026-08-13 §9.2 entry.)
 
 ### Why MongoDB
 
@@ -148,8 +155,16 @@ this scale. String `Id` fields map to Mongo `ObjectId` via `[BsonRepresentation(
   services... actually invoked automatically? No — see §7 for exactly where validators are
   wired in today (they're registered in DI but **not yet auto-invoked** by controllers; this
   is a known gap, see Roadmap §9.1).
-- **Swashbuckle (Swagger/OpenAPI)** — interactive API docs at `/swagger`.
+- **Swashbuckle (Swagger/OpenAPI)** — interactive API docs at `/swagger`, grouped into 15 tag
+  sections (Auth, Tenant Onboarding, Platform, SuperOffice, BackOffice - *, Shop - *) so a
+  47-endpoint surface stays navigable. XML doc comments on controllers are picked up
+  automatically (`GenerateDocumentationFile` in `Vastora.API.csproj`).
 - **DotNetEnv** — loads a root-level `.env` into configuration at startup (see §6).
+- **Enums serialize as strings, not numbers** — `JsonStringEnumConverter` is registered
+  globally (`Program.cs`), both directions. A `Product.Status` reads/writes as `"Active"`,
+  never `2`. This applies everywhere, including the handful of endpoints whose request body
+  *is* a bare enum (e.g. `PATCH /api/businesses/{id}/products/{id}/status` takes the JSON
+  string `"Active"` directly as its body, not an object wrapping it).
 
 ---
 
@@ -291,9 +306,6 @@ These are known, intentional cuts to keep the first session shippable — not ov
   manually today (`TenantAccount.Type` has no update endpoint at all yet, in fact — only
   `Status` and `Plan` are patchable via `/api/platform/tenants/{id}`). Add a Type-change
   endpoint in Roadmap §9.4.
-- **No resource-based `IAuthorizationHandler`** — scoping is manual (`EnsureBusinessAccessAsync`)
-  rather than a policy-based ASP.NET Core authorization handler. Works correctly, just not
-  the "proper" long-term pattern for a codebase this size.
 - **CORS is wide open** (`AllowAnyOrigin/Header/Method`) — fine for API development against
   Swagger/Postman, must be tightened before any real frontend/production deploy.
 - **No automated tests.** `tests/` is an empty placeholder directory.
@@ -332,11 +344,13 @@ actually useful next — this is a map, not a contract.
       `ValidateAndThrowAsync` before invoking each service — the validators and the
       exception-to-400 mapping already exist, just aren't connected yet.
 
-### 9.2 Proper resource-based authorization
-- [ ] Replace `EnsureBusinessAccessAsync` with an `IAuthorizationHandler` +
-      `AuthorizationPolicyProvider` so business-scoping is a first-class ASP.NET Core policy,
-      declarative on controllers via `[Authorize(Policy = "BusinessMember")]` instead of an
-      imperative call at the top of every action.
+### 9.2 Proper resource-based authorization — done (2026-08-13)
+- [x] Replaced `EnsureBusinessAccessAsync` with a `BusinessMemberRequirement` +
+      `BusinessAccessAuthorizationHandler` policy (`Vastora.API/Authorization/`), declarative
+      on controllers via `[Authorize(Policy = "BusinessMember")]`. See §3 for the mechanism.
+      Follow-up ideas, not blocking: a custom `AuthorizationPolicyProvider` if per-role policy
+      variants ever need to be generated dynamically instead of the fixed set today; unit
+      tests for the handler's three role branches (currently only smoke-tested via curl).
 
 ### 9.3 Real BusinessAdmin vs BusinessStaff permission split
 - [ ] Decide what Staff can't do (delete products? see revenue? manage other staff?) and
@@ -393,14 +407,76 @@ actually useful next — this is a map, not a contract.
 - [ ] Integration tests against a real or Testcontainers-hosted MongoDB.
 
 ### 9.13 Frontend
-- [ ] Explicitly out of scope until the API surface above feels sufficient — revisit this
-      list first.
+- [x] Blueprints written (2026-08-13) — see §10. Code itself is still not started; revisit
+      §9.1–9.2 gaps (validation, and the newer authorization pattern) as each frontend starts
+      exercising the API for real, since a UI will surface gaps a curl smoke test won't.
 
 ---
 
-## 10. Progress Log
+## 10. Frontend projects
+
+Three companion blueprint docs exist, one per planned frontend, each **self-contained** (safe
+to move into that project's own repo and hand to a fresh session with no other context):
+
+| Doc | App | Stack | Audience |
+|---|---|---|---|
+| [`docs/SUPEROFFICE_FRONTEND_BLUEPRINT.md`](docs/SUPEROFFICE_FRONTEND_BLUEPRINT.md) | SuperOffice | React (Vite SPA) | `TenantOwner` — cross-business control panel |
+| [`docs/BACKOFFICE_FRONTEND_BLUEPRINT.md`](docs/BACKOFFICE_FRONTEND_BLUEPRINT.md) | BackOffice | React (Vite SPA) | `BusinessAdmin`/`BusinessStaff`/`DeliveryAgent` — one Business's day-to-day ops |
+| [`docs/ANTIVALY_SHOP_BLUEPRINT.md`](docs/ANTIVALY_SHOP_BLUEPRINT.md) | Antivaly (pilot shop) | Next.js | Public Landing Page + Shop + `Customer` account, for the first real Business onboarded onto Vastora |
+
+Each doc carries: the exact API contracts it needs (method, path, request/response JSON
+shapes, auth requirements — pulled directly from the current DTOs, not paraphrased), a
+recommended page/screen breakdown, an auth/token-storage strategy, and — for SuperOffice and
+BackOffice specifically, since those two ship to real clients — a deployment config file spec
+(§ "Environment configuration" in each) so shipping either app to a new business is "fill in
+the config, deploy" rather than a code change. If the API surface changes (new endpoint, DTO
+field renamed, enum value added), update the relevant blueprint doc(s) in the same session —
+they will drift out of sync with the code otherwise, same as this file.
+
+---
+
+## 11. Progress Log
 
 Newest entry first. Keep entries short — what happened and why, not a diff.
+
+### 2026-08-13 — Swagger polish + enum-as-string + frontend blueprints
+Swagger was already live from the foundation session (`Swashbuckle`, `/swagger`); this pass
+polished it ahead of three frontend teams starting to consume the API: added `[Tags(...)]` to
+all 15 controllers so the UI groups by area (Auth / Tenant Onboarding / Platform / SuperOffice
+/ BackOffice - * / Shop - *) instead of one flat 47-endpoint list, enabled XML doc comment
+generation (`GenerateDocumentationFile`) so controller-level `<summary>` text shows up in the
+UI, and added a `JsonStringEnumConverter` globally — every enum (`UserRole`, `OrderStatus`,
+`TenantType`, etc.) now reads and writes as its name (`"TenantOwner"`) instead of its
+underlying int (`2`), both in normal DTOs and in the handful of endpoints whose request body
+is a bare enum. This was a deliberate fix-before-documenting: writing three frontend API
+contracts around `"role": 2`-style magic numbers would have been bad DX baked into every
+future session that reads those docs. Verified with curl: tenant signup accepting
+`"tenantType": "SingleBusiness"` and returning `"role": "TenantOwner"`, and
+`PATCH .../products/{id}/status` accepting the bare JSON string `"Active"` as its body.
+Then wrote the three frontend blueprint docs listed in §10.
+
+### 2026-08-13 — Roadmap §9.2: resource-based authorization
+Replaced the manual `VastoraControllerBase.EnsureBusinessAccessAsync` check (called
+imperatively at the top of every BackOffice action) with a real ASP.NET Core
+`IAuthorizationHandler`: `BusinessMemberRequirement` + `BusinessAccessAuthorizationHandler`
+in `Vastora.API/Authorization/`, wired up as the `"BusinessMember"` policy in `Program.cs` and
+applied declaratively via `[Authorize(Policy = "BusinessMember")]` on the 7 controllers that
+had used the old helper (`BusinessesController`, `StaffController`, `CategoriesController`,
+`ProductsController`, `CouponsController`, `DeliveryAgentsController`, `OrdersController`).
+The handler reads the `{businessId}` route value directly, applies the same three-role scoping
+rules as before, and stashes the resolved real `TenantId` on `HttpContext.Items` for the action
+to read back via a new synchronous `VastoraControllerBase.ResolvedTenantId` property — so
+actions that only needed the access check (most `GetAll`/`GetById` reads) dropped the call
+entirely, and actions that needed the tenantId for a service call dropped the `await` and the
+now-unnecessary `IBusinessService` constructor parameter in five of the seven controllers
+(`BusinessesController` and the `SuperOfficeController` still need `IBusinessService` for
+unrelated reasons). Re-ran the full smoke-test suite against the live Atlas database with two
+fresh tenants: same-tenant access (200), cross-tenant `TenantOwner`→`TenantOwner` access (404,
+unchanged), cross-tenant `BusinessAdmin`→`BusinessAdmin` access (403, the other code branch),
+unauthenticated (401), bogus `businessId` (404), `PlatformSuperAdmin` cross-tenant access
+(200), and a full write (`Create` then `Update` a Category) to confirm the resolved `TenantId`
+threaded through correctly end-to-end. All behavior is unchanged from the manual version;
+only the mechanism moved to the framework's authorization pipeline, per §9.2's original ask.
 
 ### 2026-08-13 — Foundation session
 Studied `Antivaly-main.zip` (legacy single-shop ASP.NET Web API 2 / EF6 project) to understand

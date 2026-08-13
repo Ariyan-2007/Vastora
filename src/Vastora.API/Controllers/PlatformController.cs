@@ -7,6 +7,7 @@ using Vastora.Domain.Enums;
 namespace Vastora.API.Controllers;
 
 /// <summary>Vastora's own staff console — every Tenant on the platform.</summary>
+[Tags("Platform")]
 [Route("api/platform/tenants")]
 [Authorize(Roles = nameof(UserRole.PlatformSuperAdmin))]
 public class PlatformController(ICurrentUserContext currentUser, ITenantService tenantService) : VastoraControllerBase(currentUser)

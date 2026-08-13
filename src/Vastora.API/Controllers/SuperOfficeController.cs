@@ -10,6 +10,7 @@ namespace Vastora.API.Controllers;
 /// The TenantOwner's cross-business control panel. Meaningful once a Tenant runs more
 /// than one Business: this is the only place that can see every Business they own at once.
 /// </summary>
+[Tags("SuperOffice")]
 [Route("api/superoffice/businesses")]
 [Authorize(Roles = nameof(UserRole.TenantOwner))]
 public class SuperOfficeController(ICurrentUserContext currentUser, IBusinessService businessService)

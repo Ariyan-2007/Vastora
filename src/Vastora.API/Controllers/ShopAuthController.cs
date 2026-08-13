@@ -6,6 +6,7 @@ using Vastora.Application.Common.Interfaces;
 namespace Vastora.API.Controllers;
 
 /// <summary>Customer sign-up/login, scoped to a single Business's storefront by its public slug.</summary>
+[Tags("Shop - Auth")]
 [Route("api/shop/{businessSlug}/auth")]
 [AllowAnonymous]
 public class ShopAuthController(ICurrentUserContext currentUser, IAuthService authService) : VastoraControllerBase(currentUser)

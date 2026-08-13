@@ -7,6 +7,7 @@ using Vastora.Application.Users;
 namespace Vastora.API.Controllers;
 
 /// <summary>Login realm for every non-customer role: PlatformSuperAdmin, TenantOwner, BusinessAdmin, BusinessStaff, DeliveryAgent.</summary>
+[Tags("Auth")]
 [Route("api/auth")]
 public class AuthController(ICurrentUserContext currentUser, IAuthService authService, IUserService userService)
     : VastoraControllerBase(currentUser)

@@ -7,6 +7,7 @@ using Vastora.Domain.Enums;
 namespace Vastora.API.Controllers;
 
 /// <summary>Onboarding: one call provisions a Tenant, its owner login and its first Business.</summary>
+[Tags("Tenant Onboarding")]
 [Route("api/tenants")]
 public class TenantsController(ICurrentUserContext currentUser, ITenantService tenantService) : VastoraControllerBase(currentUser)
 {

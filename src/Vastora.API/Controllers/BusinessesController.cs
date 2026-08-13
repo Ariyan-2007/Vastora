@@ -7,15 +7,16 @@ using Vastora.Domain.Enums;
 namespace Vastora.API.Controllers;
 
 /// <summary>BackOffice self-management of one Business's profile, reachable by anyone scoped to it.</summary>
+[Tags("BackOffice - Business")]
 [Route("api/businesses/{businessId}")]
 [Authorize(Roles = $"{nameof(UserRole.PlatformSuperAdmin)},{nameof(UserRole.TenantOwner)},{nameof(UserRole.BusinessAdmin)},{nameof(UserRole.BusinessStaff)}")]
+[Authorize(Policy = "BusinessMember")]
 public class BusinessesController(ICurrentUserContext currentUser, IBusinessService businessService)
     : VastoraControllerBase(currentUser)
 {
     [HttpGet]
     public async Task<ActionResult<BusinessResponse>> GetById(string businessId, CancellationToken ct)
     {
-        await EnsureBusinessAccessAsync(businessId, businessService);
         var result = await businessService.GetByIdForPlatformAsync(businessId, ct);
         return Ok(result);
     }
@@ -24,8 +25,7 @@ public class BusinessesController(ICurrentUserContext currentUser, IBusinessServ
     [Authorize(Roles = $"{nameof(UserRole.PlatformSuperAdmin)},{nameof(UserRole.TenantOwner)},{nameof(UserRole.BusinessAdmin)}")]
     public async Task<ActionResult<BusinessResponse>> Update(string businessId, UpdateBusinessRequest request, CancellationToken ct)
     {
-        var tenantId = await EnsureBusinessAccessAsync(businessId, businessService);
-        var result = await businessService.UpdateAsync(tenantId, businessId, request, ct);
+        var result = await businessService.UpdateAsync(ResolvedTenantId, businessId, request, ct);
         return Ok(result);
     }
 }
