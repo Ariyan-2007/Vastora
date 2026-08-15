@@ -157,9 +157,10 @@ not 403, so it can't be used to probe whether a resource exists), `409` conflict
 slug/SKU/coupon code, stock too low at checkout — though checkout itself is the Shop app's
 concern, not this one), `500` unexpected.
 
-**Known gap:** raw DTO shape validation (empty strings, malformed values) isn't fully enforced
-server-side yet for every endpoint — validate defensively client-side. Business-rule
-violations (duplicate codes, etc.) *are* enforced today via typed exceptions.
+**Raw DTO shape validation (empty strings, malformed values) is enforced server-side** — a
+global filter runs the backend's FluentValidation rules on every write before the action
+executes (fixed 2026-08-15). Still validate client-side for responsiveness. Business-rule
+violations (duplicate codes, etc.) are also enforced today via typed exceptions.
 
 **Every `PATCH .../status` endpoint takes a bare JSON string as its body**, not an object —
 e.g. `PATCH .../products/{id}/status` body is literally `"Active"` (quoted string), not
@@ -204,13 +205,25 @@ type UserSummaryResponse = {
 |---|---|---|---|---|
 | GET | `/api/businesses/{businessId}` | Admin, Staff, TenantOwner, Platform | — | `BusinessResponse` |
 | PUT | `/api/businesses/{businessId}` | Admin, TenantOwner, Platform (**not** Staff) | `UpdateBusinessRequest` | `BusinessResponse` |
+| PATCH | `/api/businesses/{businessId}/delivery-module` | Admin, TenantOwner, Platform (**not** Staff) | `{ enabled: boolean }` | `BusinessResponse` |
+
+Added 2026-08-15 (main blueprint §9.14): the last row turns the DeliveryAgent workflow on/off
+for this Business — pickup-only sellers or ones using a third-party courier can switch it off.
+While off, `POST .../staff` with `role: "DeliveryAgent"` 409s ("Delivery module is disabled for
+this business.") and `PATCH .../orders/{orderId}/assign-delivery` 409s the same way — build the
+BackOffice UI to hide/disable the "add delivery agent" and "assign delivery" actions when
+`business.deliveryModuleEnabled` is `false`, rather than letting the user hit the 409. Existing
+`DeliveryAgent` staff and any order already assigned to one are untouched by the toggle — it
+only blocks *new* creation/assignment.
 
 ```ts
 type BusinessResponse = {
   id: string; tenantId: string; name: string; slug: string; customDomain: string | null;
   description: string; logoUrl: string; bannerUrl: string; themeColor: string;
   currency: string; contactEmail: string; contactPhone: string;
-  status: "Draft" | "Active" | "Suspended"; createdAt: string;
+  status: "Draft" | "Active" | "Suspended";
+  deliveryModuleEnabled: boolean;  // added 2026-08-15
+  createdAt: string;
 };
 type UpdateBusinessRequest = {
   name: string; description: string; logoUrl: string; bannerUrl: string;
@@ -334,6 +347,10 @@ type CreateStaffRequest = {
 Creating a `DeliveryAgent` here also creates their `DeliveryAgentProfile` automatically
 server-side (status `Offline`, level 1, zero balance) — nothing extra to call.
 
+**`role: "DeliveryAgent"` 409s if `business.deliveryModuleEnabled` is `false`** (§7.2) — grey
+out or hide that role option in the staff-creation form when the flag is off, rather than
+letting the request round-trip to fail.
+
 ### 7.7 Delivery agents
 
 | Method | Path | Roles | Body | Returns |
@@ -369,6 +386,9 @@ here) before wiring it up — it's the one inconsistent endpoint shape in the AP
 | GET | `/{orderId}` | Admin, Staff, TenantOwner, Platform, DeliveryAgent | — | `OrderResponse` |
 | PATCH | `/{orderId}/status` | Admin, Staff, TenantOwner, Platform, DeliveryAgent | `{ status, note }` | `OrderResponse` |
 | PATCH | `/{orderId}/assign-delivery` | Admin, Staff, TenantOwner, Platform (**not** DeliveryAgent) | `{ deliveryAgentUserId }` | `OrderResponse` |
+
+**`assign-delivery` 409s the same way if `business.deliveryModuleEnabled` is `false`** — hide
+the "assign delivery agent" action on the order detail screen when the flag is off (§7.2).
 
 ```ts
 type OrderResponse = {

@@ -16,6 +16,7 @@ public record BusinessResponse(
     string ContactEmail,
     string ContactPhone,
     BusinessStatus Status,
+    bool DeliveryModuleEnabled,
     DateTime CreatedAt);
 
 public record CreateBusinessRequest(
@@ -35,3 +36,5 @@ public record UpdateBusinessRequest(
     string ContactEmail,
     string ContactPhone,
     string Currency);
+
+public record UpdateDeliveryModuleRequest(bool Enabled);

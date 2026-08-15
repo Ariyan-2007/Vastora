@@ -10,6 +10,7 @@ public class OrderService(
     IMongoRepository<Order> orders,
     IMongoRepository<Domain.Entities.Cart> carts,
     IMongoRepository<Product> products,
+    IMongoRepository<Business> businesses,
     ICouponService couponService) : IOrderService
 {
     private static readonly HashSet<OrderStatus> CancellableStatuses = [OrderStatus.PendingPayment, OrderStatus.Processing, OrderStatus.Confirmed];
@@ -138,6 +139,13 @@ public class OrderService(
 
     public async Task<OrderResponse> AssignDeliveryAgentAsync(string tenantId, string businessId, string orderId, AssignDeliveryAgentRequest request, CancellationToken ct = default)
     {
+        var business = await businesses.GetByIdAsync(businessId, ct)
+            ?? throw new NotFoundException(nameof(Business), businessId);
+        if (!business.DeliveryModuleEnabled)
+        {
+            throw new ConflictException("Delivery module is disabled for this business.");
+        }
+
         var order = await GetScopedAsync(tenantId, businessId, orderId, ct);
 
         order.DeliveryAgentUserId = request.DeliveryAgentUserId;

@@ -9,6 +9,7 @@ namespace Vastora.Application.Users;
 public class UserService(
     IMongoRepository<AppUser> users,
     IMongoRepository<DeliveryAgentProfile> deliveryAgentProfiles,
+    IMongoRepository<Business> businesses,
     IPasswordHasher passwordHasher) : IUserService
 {
     private static readonly UserRole[] CreatableStaffRoles =
@@ -19,6 +20,16 @@ public class UserService(
         if (!CreatableStaffRoles.Contains(request.Role))
         {
             throw new ForbiddenException($"Role '{request.Role}' cannot be created through this endpoint.");
+        }
+
+        if (request.Role == UserRole.DeliveryAgent)
+        {
+            var business = await businesses.GetByIdAsync(businessId, ct)
+                ?? throw new NotFoundException(nameof(Business), businessId);
+            if (!business.DeliveryModuleEnabled)
+            {
+                throw new ConflictException("Delivery module is disabled for this business.");
+            }
         }
 
         var emailTaken = await users.ExistsAsync(u => u.Email == request.Email && u.Role != UserRole.Customer, ct);

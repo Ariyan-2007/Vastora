@@ -47,8 +47,8 @@ embed BackOffice's screens directly — a product decision, not a technical bloc
 - Data fetching: TanStack Query (React Query) recommended — handles caching/refetch/loading
   states cleanly against a REST API like this one.
 - Forms: any (React Hook Form is a reasonable default) — the API's validation feedback shape
-  is documented in §5, build client-side validation to match since the API's own server-side
-  DTO validation is not fully wired up yet (see §5's caveat).
+  is documented in §5; server-side DTO validation is fully enforced (see §5), but still build
+  client-side validation for responsiveness rather than round-tripping every keystroke.
 - Auth token storage: see §4.
 
 ---
@@ -132,12 +132,12 @@ Business belonging to a different Tenant, the API returns 404 rather than confir
 Business exists at all. Don't build UI that distinguishes "doesn't exist" from "not yours" —
 the API deliberately doesn't let you.
 
-**Known gap:** DTO-level validation (empty required strings, malformed values) is not yet
-enforced server-side for every endpoint — the backend's FluentValidation validators exist but
-aren't fully wired into every controller action yet. Build defensive client-side validation
-(required fields, sane lengths) rather than relying on the API to catch bad input; business
-rule violations (duplicate slugs, Business-count limits, etc.) *are* enforced server-side today
-via typed exceptions (409/404), just not raw shape validation.
+**DTO-level validation is enforced server-side** (empty required strings, malformed emails,
+length limits, etc. — a global filter runs the backend's FluentValidation rules on every write
+before the action executes; fixed 2026-08-15). Still build client-side validation for
+responsiveness, but don't build around the API silently accepting bad input — it won't.
+Business rule violations (duplicate slugs, Business-count limits, etc.) are also enforced today
+via typed exceptions (409/404).
 
 ---
 
@@ -214,6 +214,7 @@ never pass a `tenantId`, the backend reads it from your JWT.
 | GET | `/api/superoffice/businesses/{businessId}` | — | `BusinessResponse` | 404 if not yours |
 | PUT | `/api/superoffice/businesses/{businessId}` | `UpdateBusinessRequest` | `BusinessResponse` | Full profile update |
 | PATCH | `/api/superoffice/businesses/{businessId}/status` | bare string, e.g. `"Suspended"` | `BusinessResponse` | See note below |
+| PATCH | `/api/businesses/{businessId}/delivery-module` | `{ enabled: boolean }` | `BusinessResponse` | Not under `/superoffice/` — it's the shared BackOffice route (main blueprint §9.14), but a `TenantOwner`'s JWT works on it too, same as any BackOffice endpoint (§1's note above on reusing the token). Turns the DeliveryAgent workflow on/off for one Business; existing agents and in-flight assignments aren't touched, only new creation/assignment is blocked while off. |
 
 ```ts
 type BusinessResponse = {
@@ -230,6 +231,7 @@ type BusinessResponse = {
   contactEmail: string;
   contactPhone: string;
   status: "Draft" | "Active" | "Suspended";
+  deliveryModuleEnabled: boolean;  // added 2026-08-15 — see the delivery-module row above
   createdAt: string;
 };
 

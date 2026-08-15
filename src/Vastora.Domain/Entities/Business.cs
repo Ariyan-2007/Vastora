@@ -37,4 +37,12 @@ public class Business : BaseEntity, ITenantScoped
     public Address? Address { get; set; }
 
     public BusinessStatus Status { get; set; } = BusinessStatus.Draft;
+
+    /// <summary>
+    /// Whether this Business uses the DeliveryAgent workflow at all. Pickup-only sellers or
+    /// ones using a third-party courier can turn it off; new DeliveryAgent staff can't be
+    /// created and orders can't be assigned to one while disabled, but existing agents and
+    /// in-flight assignments are left alone.
+    /// </summary>
+    public bool DeliveryModuleEnabled { get; set; } = true;
 }

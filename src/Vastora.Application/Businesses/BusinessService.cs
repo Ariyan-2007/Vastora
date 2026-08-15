@@ -93,6 +93,15 @@ public class BusinessService(
         return Map(business);
     }
 
+    public async Task<BusinessResponse> UpdateDeliveryModuleAsync(string tenantId, string businessId, bool enabled, CancellationToken ct = default)
+    {
+        var business = await GetScopedAsync(tenantId, businessId, ct);
+        business.DeliveryModuleEnabled = enabled;
+        business.UpdatedAt = DateTime.UtcNow;
+        await businesses.UpdateAsync(business, ct);
+        return Map(business);
+    }
+
     private async Task<Business> GetScopedAsync(string tenantId, string businessId, CancellationToken ct)
     {
         var business = await businesses.GetByIdAsync(businessId, ct);
@@ -123,5 +132,5 @@ public class BusinessService(
 
     private static BusinessResponse Map(Business b) => new(
         b.Id, b.TenantId, b.Name, b.Slug, b.CustomDomain, b.Description, b.LogoUrl, b.BannerUrl,
-        b.ThemeColor, b.Currency, b.ContactEmail, b.ContactPhone, b.Status, b.CreatedAt);
+        b.ThemeColor, b.Currency, b.ContactEmail, b.ContactPhone, b.Status, b.DeliveryModuleEnabled, b.CreatedAt);
 }

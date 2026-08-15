@@ -112,9 +112,10 @@ stock too low at checkout ("`'Product X' only has 3 left in stock.`" — the mes
 returned in `title`, safe to show directly to the customer for this specific error type).
 `500` unexpected.
 
-**Known gap:** raw input validation (empty required fields, malformed email) isn't fully
-enforced server-side yet for every endpoint — validate registration/checkout forms client-side
-defensively.
+**Raw input validation (empty required fields, malformed email) is enforced server-side** — a
+global filter runs the backend's FluentValidation rules on every write before the action
+executes (fixed 2026-08-15). Still validate registration/checkout forms client-side for
+responsiveness, but the API itself now rejects bad input rather than accepting it silently.
 
 ---
 
@@ -164,7 +165,9 @@ type BusinessResponse = {
   id: string; tenantId: string; name: string; slug: string; customDomain: string | null;
   description: string; logoUrl: string; bannerUrl: string; themeColor: string;
   currency: string; contactEmail: string; contactPhone: string;
-  status: "Draft" | "Active" | "Suspended"; createdAt: string;
+  status: "Draft" | "Active" | "Suspended";
+  deliveryModuleEnabled: boolean;  // added 2026-08-15 — see note below
+  createdAt: string;
 };
 type CategoryResponse = {
   id: string; businessId: string; name: string; slug: string;
@@ -257,6 +260,13 @@ distance-based fee calculation on the backend yet. Antivaly needs to decide its 
 (flat rate? free above a threshold?) and compute it client-side before calling checkout; the
 backend just records whatever number is sent. This is a known simplification, not a bug to
 work around cleverly — flag it if a fee calculator ends up needing server-side logic.
+
+**`deliveryModuleEnabled` on the storefront response (added 2026-08-15, main blueprint §9.14)**
+tells you whether this Business runs a delivery workflow at all — some sellers are pickup-only
+or use a third-party courier. It doesn't change the checkout API's shape (`deliveryFee` still
+accepts any caller-supplied number regardless), but it's a signal worth reading: when `false`,
+consider hiding delivery-related copy/estimates and defaulting `deliveryFee` to `0` or a
+pickup-appropriate value rather than showing a delivery ETA that will never happen.
 
 **No payment gateway exists.** Checkout immediately creates the order with
 `paymentStatus: "Pending"` and `status: "Processing"` — effectively a cash-on-delivery flow

@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi;
 using Vastora.API.Authorization;
+using Vastora.API.Filters;
 using Vastora.API.Middleware;
 using Vastora.Application;
 using Vastora.Infrastructure;
@@ -38,7 +39,12 @@ if (!string.IsNullOrWhiteSpace(mongoConnectionString))
     builder.Configuration["MongoDb:ConnectionString"] = mongoConnectionString;
 }
 
-builder.Services.AddControllers()
+builder.Services.AddControllers(options =>
+    {
+        // Auto-runs the registered FluentValidation IValidator<T> (if any) for every action
+        // argument before the action body executes — see ValidationActionFilter for the "why".
+        options.Filters.Add<ValidationActionFilter>();
+    })
     .AddJsonOptions(options =>
     {
         // Enums cross the wire as readable names ("TenantOwner") instead of raw ints (2) —
