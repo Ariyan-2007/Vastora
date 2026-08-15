@@ -3,7 +3,8 @@
 **Self-contained.** This file assumes no other context — move it into the SuperOffice
 project's own repo and hand it to a fresh session; everything needed to build against the
 Vastora API is here. If the Vastora API changes, this doc must be updated in the same session
-as the change (see the main `VASTORA_BLUEPRINT.md`, §10, in the Vastora backend repo).
+as the change (see the intro note at the top of the main `VASTORA_BLUEPRINT.md` in the Vastora
+backend repo).
 
 ---
 
@@ -47,8 +48,8 @@ embed BackOffice's screens directly — a product decision, not a technical bloc
 - Data fetching: TanStack Query (React Query) recommended — handles caching/refetch/loading
   states cleanly against a REST API like this one.
 - Forms: any (React Hook Form is a reasonable default) — the API's validation feedback shape
-  is documented in §5, build client-side validation to match since the API's own server-side
-  DTO validation is not fully wired up yet (see §5's caveat).
+  is documented in §5; server-side DTO validation is fully enforced (see §5), but still build
+  client-side validation for responsiveness rather than round-tripping every keystroke.
 - Auth token storage: see §4.
 
 ---
@@ -93,6 +94,13 @@ Every authenticated request needs `Authorization: Bearer <accessToken>`.
   returns a brand-new refresh token; the old one is immediately revoked. Always store
   whichever refresh token came back from the *last* successful call, never reuse an old one.
 - `POST /api/auth/logout` with `{ "refreshToken": "..." }` revokes it server-side.
+- **Password reset (added 2026-08-15, main blueprint §9.10):** `POST /api/auth/forgot-password`
+  `{ email }` always 204s regardless of whether the email matches an account — don't build a UI
+  that reveals which. `POST /api/auth/reset-password` `{ token, newPassword }` (shared across
+  every realm) resets it and revokes every active session for that user server-side — the user
+  will need to log in again after a reset, including on this device. There is no real email
+  delivery yet (§9.10's `INotificationService` only logs server-side) — until a provider is
+  wired in, "forgot password" isn't actually usable by a real end user through this UI alone.
 
 **Recommended storage (foundation-phase pragmatic choice):** both tokens in `localStorage`.
 This is not the most secure option (an httpOnly-cookie-based flow through a small BFF would
@@ -132,12 +140,12 @@ Business belonging to a different Tenant, the API returns 404 rather than confir
 Business exists at all. Don't build UI that distinguishes "doesn't exist" from "not yours" —
 the API deliberately doesn't let you.
 
-**Known gap:** DTO-level validation (empty required strings, malformed values) is not yet
-enforced server-side for every endpoint — the backend's FluentValidation validators exist but
-aren't fully wired into every controller action yet. Build defensive client-side validation
-(required fields, sane lengths) rather than relying on the API to catch bad input; business
-rule violations (duplicate slugs, Business-count limits, etc.) *are* enforced server-side today
-via typed exceptions (409/404), just not raw shape validation.
+**DTO-level validation is enforced server-side** (empty required strings, malformed emails,
+length limits, etc. — a global filter runs the backend's FluentValidation rules on every write
+before the action executes; fixed 2026-08-15). Still build client-side validation for
+responsiveness, but don't build around the API silently accepting bad input — it won't.
+Business rule violations (duplicate slugs, Business-count limits, etc.) are also enforced today
+via typed exceptions (409/404).
 
 ---
 
@@ -202,6 +210,40 @@ only Platform staff can change `Status`/`Plan` (not exposed to this app). If Ten
 self-service profile editing is needed, that's a backend gap to flag, not something to work
 around client-side.
 
+**Usage vs. plan limits (added 2026-08-15, main blueprint §9.9):**
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| GET | `/api/tenants/me/usage` | — | `TenantUsageResponse` |
+
+```ts
+type BusinessUsageEntry = {
+  businessId: string;
+  businessName: string;
+  staffCount: number;
+  maxStaffPerBusiness: number | null;   // null = unlimited (Enterprise)
+  productCount: number;
+  maxProductsPerBusiness: number | null;
+};
+type TenantUsageResponse = {
+  plan: TenantResponse["plan"];
+  businessCount: number;
+  maxBusinesses: number | null;         // null = unlimited (Enterprise)
+  businesses: BusinessUsageEntry[];
+};
+```
+
+Each plan tier caps Businesses per Tenant, staff per Business, and products per Business
+(Trial: 1/3/20, Starter: 1/10/200, Growth: 5/50/2000, Enterprise: unlimited — see the main
+blueprint's `SubscriptionPlanLimits` for the authoritative numbers, since they can change
+without this doc being updated). Hitting a limit doesn't show up here first — it shows up as a
+`409` from the action that would exceed it (`POST .../superoffice/businesses`,
+`POST .../businesses/{id}/staff`, `POST .../businesses/{id}/products`), with a message like
+`"Your 'Trial' plan allows up to 1 Business(es). Upgrade your plan to add another."` This
+endpoint is for *displaying* usage proactively (a "2 of 3 staff used" indicator, disabling the
+"Add Business" button at the limit) — build the UI to check it before the user hits the wall,
+but still handle the 409 gracefully since usage can go stale between page load and submit.
+
 ### 6.3 Businesses (the core of this app)
 
 All under `/api/superoffice/businesses`, always implicitly scoped to your own Tenant — you
@@ -214,6 +256,7 @@ never pass a `tenantId`, the backend reads it from your JWT.
 | GET | `/api/superoffice/businesses/{businessId}` | — | `BusinessResponse` | 404 if not yours |
 | PUT | `/api/superoffice/businesses/{businessId}` | `UpdateBusinessRequest` | `BusinessResponse` | Full profile update |
 | PATCH | `/api/superoffice/businesses/{businessId}/status` | bare string, e.g. `"Suspended"` | `BusinessResponse` | See note below |
+| PATCH | `/api/businesses/{businessId}/delivery-module` | `{ enabled: boolean }` | `BusinessResponse` | Not under `/superoffice/` — it's the shared BackOffice route (main blueprint §9.14), but a `TenantOwner`'s JWT works on it too, same as any BackOffice endpoint (§1's note above on reusing the token). Turns the DeliveryAgent workflow on/off for one Business; existing agents and in-flight assignments aren't touched, only new creation/assignment is blocked while off. |
 
 ```ts
 type BusinessResponse = {
@@ -230,6 +273,8 @@ type BusinessResponse = {
   contactEmail: string;
   contactPhone: string;
   status: "Draft" | "Active" | "Suspended";
+  deliveryModuleEnabled: boolean;  // added 2026-08-15 — see the delivery-module row above
+  defaultDeliveryFee: number;      // added 2026-08-15, main blueprint §9.7 — flat fee Shop checkout falls back to when the customer's request omits one
   createdAt: string;
 };
 
@@ -251,6 +296,7 @@ type UpdateBusinessRequest = {
   contactEmail: string;
   contactPhone: string;
   currency: string;
+  defaultDeliveryFee: number;  // added 2026-08-15, main blueprint §9.7
 };
 ```
 
@@ -259,13 +305,43 @@ quotes, as the raw request body / `JSON.stringify("Active")`), not `{"status": "
 This is true of every `PATCH .../status` endpoint across the whole Vastora API — a backend
 inconsistency worth knowing about, not a typo in this doc.
 
-**Gating the "Add Business" button:** check `TenantResponse.type` (from §6.2) — if
-`"SingleBusiness"`, either hide the create action entirely or expect a 409 when the Tenant
-already has one Business (which, for a `SingleBusiness` Tenant, is always true after their
-first Business exists). There is no self-serve upgrade path from `SingleBusiness` to
-`MultiBusiness` yet (Platform staff only, and not even exposed via an endpoint yet — see the
-main blueprint's roadmap §9.4) — surface a "contact support to upgrade" message rather than a
-broken create flow.
+**Gating the "Add Business" button:** two independent caps can 409 this action, check both.
+First, `TenantResponse.type` (from §6.2) — if `"SingleBusiness"`, either hide the create action
+entirely or expect a 409 when the Tenant already has one Business (always true for a
+`SingleBusiness` Tenant after their first Business exists). There is still no self-serve
+upgrade path a `TenantOwner` can trigger themselves — a Platform admin now has an endpoint to
+flip the type (`PATCH /api/platform/tenants/{id}/type`, main blueprint §9.4, added 2026-08-15),
+but it isn't exposed to this app and there's no request/approve workflow yet (still a product
+decision) — surface a "contact support to upgrade" message rather than a broken create flow.
+Second, even a `MultiBusiness` Tenant is capped by its plan's `maxBusinesses` (§6.2's usage
+endpoint) — at Trial that's 1, same ceiling as a `SingleBusiness` Tenant, so don't assume
+`type: "MultiBusiness"` alone means the button is always safe to show enabled.
+
+### 6.4 Analytics (added 2026-08-15, main blueprint §9.8)
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| GET | `/api/superoffice/analytics` | — | `TenantAnalyticsResponse` |
+
+```ts
+type BusinessAnalyticsEntry = { businessId: string; businessName: string; orderCount: number; revenue: number };
+type TopProductStat = { productId: string; productName: string; quantitySold: number; revenue: number };
+type TenantAnalyticsResponse = {
+  totalRevenue: number;
+  totalOrders: number;
+  businesses: BusinessAnalyticsEntry[];
+  topProducts: TopProductStat[];  // top 10 by quantity sold
+};
+```
+
+**`revenue` is recognized on delivered orders only** — an order sitting in `Processing` never
+counts toward it, even though it does count toward `orderCount` (every non-cancelled order
+counts there, overall and per Business). This is deliberate and matches how the backend's own
+accounting module (main blueprint §9.16) recognizes revenue, so this number and a Business's
+own P&L report (BackOffice, not this app) should never disagree. No date-range filter on this
+endpoint — it's all-time; if a windowed view is needed, that's a backend gap to request, not
+something to fake by filtering client-side against an unbounded order list this endpoint
+doesn't provide.
 
 ---
 
@@ -274,9 +350,9 @@ broken create flow.
 1. **Login** — `POST /api/auth/login`; on success, verify `role === "TenantOwner"` before
    proceeding (redirect elsewhere / show an error otherwise).
 2. **Dashboard** — list of Businesses (§6.3 GET all) as cards/table: name, slug, status,
-   currency. No aggregate revenue/order stats endpoint exists yet (main blueprint roadmap
-   §9.8) — don't build a stats widget that has nothing to call; a plain list is the honest
-   MVP here.
+   currency, plus §6.4's `GET /api/superoffice/analytics` for a total-revenue/total-orders
+   summary and a top-products list. Per-Business `revenue`/`orderCount` from that same
+   response can annotate each card without a second call per Business.
 3. **Tenant profile** (read-only) — `GET /api/tenants/me`: name, slug, type, status, plan.
 4. **Business detail / edit** — `GET` + `PUT` one Business, `PATCH` its status
    (Active/Suspended toggle — Draft is presumably only ever set at creation, not toggled back

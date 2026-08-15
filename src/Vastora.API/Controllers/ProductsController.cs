@@ -10,9 +10,17 @@ namespace Vastora.API.Controllers;
 [Route("api/businesses/{businessId}/products")]
 [Authorize(Roles = $"{nameof(UserRole.PlatformSuperAdmin)},{nameof(UserRole.TenantOwner)},{nameof(UserRole.BusinessAdmin)},{nameof(UserRole.BusinessStaff)}")]
 [Authorize(Policy = "BusinessMember")]
-public class ProductsController(ICurrentUserContext currentUser, IProductService productService)
+public class ProductsController(ICurrentUserContext currentUser, IProductService productService, IFileStorageService fileStorage)
     : VastoraControllerBase(currentUser)
 {
+    private static readonly Dictionary<string, string> AllowedImageContentTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["image/jpeg"] = ".jpg",
+        ["image/png"] = ".png",
+        ["image/webp"] = ".webp",
+        ["image/gif"] = ".gif"
+    };
+
     [HttpGet]
     public async Task<ActionResult<List<ProductResponse>>> GetAll(string businessId, CancellationToken ct)
     {
@@ -49,9 +57,31 @@ public class ProductsController(ICurrentUserContext currentUser, IProductService
     }
 
     [HttpDelete("{productId}")]
+    [Authorize(Roles = $"{nameof(UserRole.PlatformSuperAdmin)},{nameof(UserRole.TenantOwner)},{nameof(UserRole.BusinessAdmin)}")]
     public async Task<IActionResult> Delete(string businessId, string productId, CancellationToken ct)
     {
         await productService.DeleteAsync(ResolvedTenantId, businessId, productId, ct);
         return NoContent();
+    }
+
+    /// <summary>Uploads one image, appends it to Product.Images (§9.5). Local disk storage — see IFileStorageService.</summary>
+    [HttpPost("{productId}/images")]
+    [RequestSizeLimit(5 * 1024 * 1024)]
+    public async Task<ActionResult<ProductResponse>> UploadImage(string businessId, string productId, IFormFile file, CancellationToken ct)
+    {
+        if (file.Length == 0)
+        {
+            return BadRequest("File is empty.");
+        }
+
+        if (!AllowedImageContentTypes.TryGetValue(file.ContentType, out var extension))
+        {
+            return BadRequest("Unsupported image type. Allowed: image/jpeg, image/png, image/webp, image/gif.");
+        }
+
+        await using var stream = file.OpenReadStream();
+        var url = await fileStorage.SaveAsync(businessId, stream, extension, ct);
+        var result = await productService.AddImageAsync(ResolvedTenantId, businessId, productId, url, ct);
+        return Ok(result);
     }
 }

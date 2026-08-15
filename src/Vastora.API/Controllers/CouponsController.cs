@@ -21,6 +21,7 @@ public class CouponsController(ICurrentUserContext currentUser, ICouponService c
     }
 
     [HttpPost]
+    [Authorize(Roles = $"{nameof(UserRole.PlatformSuperAdmin)},{nameof(UserRole.TenantOwner)},{nameof(UserRole.BusinessAdmin)}")]
     public async Task<ActionResult<CouponResponse>> Create(string businessId, CreateCouponRequest request, CancellationToken ct)
     {
         var result = await couponService.CreateAsync(ResolvedTenantId, businessId, request, ct);
@@ -28,6 +29,7 @@ public class CouponsController(ICurrentUserContext currentUser, ICouponService c
     }
 
     [HttpPut("{couponId}")]
+    [Authorize(Roles = $"{nameof(UserRole.PlatformSuperAdmin)},{nameof(UserRole.TenantOwner)},{nameof(UserRole.BusinessAdmin)}")]
     public async Task<ActionResult<CouponResponse>> Update(string businessId, string couponId, UpdateCouponRequest request, CancellationToken ct)
     {
         var result = await couponService.UpdateAsync(ResolvedTenantId, businessId, couponId, request, ct);
@@ -35,6 +37,7 @@ public class CouponsController(ICurrentUserContext currentUser, ICouponService c
     }
 
     [HttpDelete("{couponId}")]
+    [Authorize(Roles = $"{nameof(UserRole.PlatformSuperAdmin)},{nameof(UserRole.TenantOwner)},{nameof(UserRole.BusinessAdmin)}")]
     public async Task<IActionResult> Delete(string businessId, string couponId, CancellationToken ct)
     {
         await couponService.DeleteAsync(ResolvedTenantId, businessId, couponId, ct);

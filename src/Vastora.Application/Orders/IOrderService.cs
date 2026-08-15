@@ -18,6 +18,9 @@ public interface IOrderService
 
     Task<OrderResponse> UpdateStatusAsync(string tenantId, string businessId, string orderId, UpdateOrderStatusRequest request, CancellationToken ct = default);
 
+    /// <summary>Manual payment recording for the cash-on-delivery flow (§9.6) — no gateway exists to do this automatically yet.</summary>
+    Task<OrderResponse> UpdatePaymentStatusAsync(string tenantId, string businessId, string orderId, UpdatePaymentStatusRequest request, CancellationToken ct = default);
+
     Task<OrderResponse> AssignDeliveryAgentAsync(string tenantId, string businessId, string orderId, AssignDeliveryAgentRequest request, CancellationToken ct = default);
 
     /// <summary>Customer-initiated cancellation; only allowed while the order hasn't shipped, restocks items.</summary>

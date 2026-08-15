@@ -10,6 +10,7 @@ namespace Vastora.Application.Tenants;
 public class TenantService(
     IMongoRepository<TenantAccount> tenants,
     IMongoRepository<AppUser> users,
+    IMongoRepository<Product> products,
     IPasswordHasher passwordHasher,
     IAuthTokenIssuer tokenIssuer,
     IBusinessService businessService) : ITenantService
@@ -94,6 +95,50 @@ public class TenantService(
         tenant.UpdatedAt = DateTime.UtcNow;
         await tenants.UpdateAsync(tenant, ct);
         return Map(tenant);
+    }
+
+    public async Task<TenantResponse> UpdateTypeAsync(string tenantId, TenantType type, CancellationToken ct = default)
+    {
+        var tenant = await tenants.GetByIdAsync(tenantId, ct)
+            ?? throw new NotFoundException(nameof(TenantAccount), tenantId);
+
+        if (type == TenantType.SingleBusiness && tenant.Type == TenantType.MultiBusiness)
+        {
+            var businessCount = await businessService.GetAllForTenantAsync(tenantId, ct);
+            if (businessCount.Count > 1)
+            {
+                throw new ConflictException(
+                    "Cannot downgrade to a single-business account while this Tenant owns more than one Business. Reduce to one Business first.");
+            }
+        }
+
+        tenant.Type = type;
+        tenant.UpdatedAt = DateTime.UtcNow;
+        await tenants.UpdateAsync(tenant, ct);
+        return Map(tenant);
+    }
+
+    public async Task<TenantUsageResponse> GetUsageAsync(string tenantId, CancellationToken ct = default)
+    {
+        var tenant = await tenants.GetByIdAsync(tenantId, ct)
+            ?? throw new NotFoundException(nameof(TenantAccount), tenantId);
+        var limits = SubscriptionPlanLimits.For(tenant.Plan);
+
+        var businesses = await businessService.GetAllForTenantAsync(tenantId, ct);
+        var businessUsages = new List<BusinessUsageResponse>();
+        foreach (var business in businesses)
+        {
+            var staffCount = await users.CountAsync(
+                u => u.BusinessId == business.Id
+                     && (u.Role == UserRole.BusinessAdmin || u.Role == UserRole.BusinessStaff || u.Role == UserRole.DeliveryAgent),
+                ct);
+            var productCount = await products.CountAsync(p => p.BusinessId == business.Id, ct);
+
+            businessUsages.Add(new BusinessUsageResponse(
+                business.Id, business.Name, (int)staffCount, limits.MaxStaffPerBusiness, (int)productCount, limits.MaxProductsPerBusiness));
+        }
+
+        return new TenantUsageResponse(tenant.Plan, businesses.Count, limits.MaxBusinesses, businessUsages);
     }
 
     private async Task<string> GenerateUniqueTenantSlugAsync(string seed, CancellationToken ct)

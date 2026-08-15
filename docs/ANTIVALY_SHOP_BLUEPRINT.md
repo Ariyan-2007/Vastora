@@ -3,7 +3,7 @@
 **Self-contained.** This file assumes no other context — move it into the Antivaly project's
 own repo and hand it to a fresh session; everything needed to build against the Vastora API is
 here. If the Vastora API changes, this doc must be updated in the same session as the change
-(see the main `VASTORA_BLUEPRINT.md`, §10, in the Vastora backend repo).
+(see the intro note at the top of the main `VASTORA_BLUEPRINT.md` in the Vastora backend repo).
 
 ---
 
@@ -83,6 +83,15 @@ registration/login and public catalog browsing use the `{slug}` in the path.
 - Access token ~30 min. Refresh token 30 days, **rotates on every use** — persist the newest
   one after every refresh call.
 - `POST /api/auth/refresh` with `{ refreshToken }`, `POST /api/auth/logout` with the same.
+- **Password reset (added 2026-08-15, main blueprint §9.10):**
+  `POST /api/shop/{slug}/auth/forgot-password` `{ email }` always 204s regardless of whether the
+  email matches a Customer account on this Business — don't build a UI that reveals which.
+  `POST /api/auth/reset-password` `{ token, newPassword }` (not slug-rooted — shared across
+  every realm on the platform, the token itself identifies the account) completes it and
+  revokes every active session for that customer. **No real email delivery exists yet** — the
+  reset token is currently only visible in the backend's own server log, so this flow isn't
+  actually usable by a real customer until an email provider is chosen and wired in; still
+  worth building the UI now so it's ready.
 
 **Storage:** for a Next.js app, prefer storing tokens in an httpOnly cookie set by a Next.js
 Route Handler that proxies the login/refresh calls, rather than `localStorage` — this app is
@@ -112,9 +121,10 @@ stock too low at checkout ("`'Product X' only has 3 left in stock.`" — the mes
 returned in `title`, safe to show directly to the customer for this specific error type).
 `500` unexpected.
 
-**Known gap:** raw input validation (empty required fields, malformed email) isn't fully
-enforced server-side yet for every endpoint — validate registration/checkout forms client-side
-defensively.
+**Raw input validation (empty required fields, malformed email) is enforced server-side** — a
+global filter runs the backend's FluentValidation rules on every write before the action
+executes (fixed 2026-08-15). Still validate registration/checkout forms client-side for
+responsiveness, but the API itself now rejects bad input rather than accepting it silently.
 
 ---
 
@@ -128,6 +138,8 @@ Base URL = `NEXT_PUBLIC_API_BASE_URL`. `{slug}` = `NEXT_PUBLIC_BUSINESS_SLUG`.
 |---|---|---|---|---|
 | POST | `/api/shop/{slug}/auth/register` | none | `StorefrontRegisterRequest` | `AuthResponse` |
 | POST | `/api/shop/{slug}/auth/login` | none | `StorefrontLoginRequest` | `AuthResponse` |
+| POST | `/api/shop/{slug}/auth/forgot-password` | none | `{ email }` | 204 |
+| POST | `/api/auth/reset-password` | none | `{ token, newPassword }` | 204 |
 | POST | `/api/auth/refresh` | none | `{ refreshToken }` | `AuthResponse` |
 | POST | `/api/auth/logout` | none | `{ refreshToken }` | 204 |
 | GET | `/api/auth/me` | Customer | — | `UserSummaryResponse` |
@@ -164,12 +176,18 @@ type BusinessResponse = {
   id: string; tenantId: string; name: string; slug: string; customDomain: string | null;
   description: string; logoUrl: string; bannerUrl: string; themeColor: string;
   currency: string; contactEmail: string; contactPhone: string;
-  status: "Draft" | "Active" | "Suspended"; createdAt: string;
+  status: "Draft" | "Active" | "Suspended";
+  deliveryModuleEnabled: boolean;  // see note below
+  defaultDeliveryFee: number;      // added 2026-08-15, main blueprint §9.7 — see §6.4
+  createdAt: string;
 };
 type CategoryResponse = {
   id: string; businessId: string; name: string; slug: string;
   parentCategoryId: string | null; description: string; imageUrl: string;
   sortOrder: number; isActive: boolean;
+};
+type ProductVariantResponse = {
+  id: string; attributeSummary: string; sku: string; priceOverride: number | null; stockQuantity: number;
 };
 type ProductResponse = {
   id: string; businessId: string; categoryId: string; name: string; slug: string; sku: string;
@@ -177,14 +195,26 @@ type ProductResponse = {
   discountPercent: number | null; discountExpiresAt: string | null;
   effectivePrice: number; // ALWAYS display this as the price, not `price` — it already accounts for any active discount
   stockQuantity: number; trackInventory: boolean;
+  reorderThreshold: number | null; reorderQuantity: number | null;  // BackOffice-facing fields, not customer-relevant — safe to ignore
   images: string[]; tags: string[];
   status: "Active"; // public endpoints only ever return Active products
+  variants: ProductVariantResponse[];  // added 2026-08-15, main blueprint §9.5 — see note below
 };
 ```
 
-`search` does a simple case-insensitive substring match against product name/description —
-no fuzzy matching, no relevance ranking. Fine for a small catalog; revisit if Antivaly's
-catalog grows large (backend roadmap flags this as a known scaling limit).
+`search` does a simple case-insensitive substring match against product name/description,
+evaluated server-side by MongoDB (not an in-memory scan anymore, but still no fuzzy matching or
+relevance ranking). Fine for a small catalog; revisit if Antivaly's catalog grows large (backend
+roadmap flags this as a known scaling limit).
+
+**Product variants exist but aren't purchasable through this app's API surface (§9.5).** A
+product can have BackOffice-managed variants (e.g. "Red / Large"), and `variants` is returned
+here so a product detail page *can* display them (size/color chips, say), but there is no way
+to add a specific variant to the cart or checkout with one selected — `POST /api/shop/cart/items`
+only ever takes a bare `productId`. If a real variant-aware storefront is needed, that's a
+backend gap to flag (Cart/Order would need redesigning to reference a variant, not just a
+product), not something to fake by, say, encoding the variant into a query param the backend
+will silently ignore.
 
 ### 6.3 Cart — Customer only, **not slug-rooted**
 
@@ -231,9 +261,11 @@ type CheckoutRequest = {
     label: string; line1: string; line2: string; city: string; state: string;
     postalCode: string; country: string; phone: string; isDefault: boolean;
   };
-  deliveryFee: number; // caller-supplied — no zone/distance calculation exists server-side yet, see note below
+  deliveryFee?: number | null; // optional as of 2026-08-15 — see note below
 };
 
+type OrderStatusEventResponse = { status: OrderResponse["status"]; timestamp: string; note: string };
+type PaymentStatusEventResponse = { status: OrderResponse["paymentStatus"]; timestamp: string; note: string };
 type OrderResponse = {
   id: string; businessId: string; orderNumber: string; customerUserId: string;
   items: { productId: string; productName: string; unitPrice: number; quantity: number; lineTotal: number }[];
@@ -242,6 +274,8 @@ type OrderResponse = {
   paymentStatus: "Pending" | "Paid" | "Failed" | "Refunded";
   shippingAddress: CheckoutRequest["shippingAddress"] | null;
   deliveryAgentUserId: string | null;
+  statusHistory: OrderStatusEventResponse[];          // added 2026-08-15, main blueprint §9.7
+  paymentStatusHistory: PaymentStatusEventResponse[];  // added 2026-08-15, main blueprint §9.6
   placedAt: string;
 };
 ```
@@ -252,17 +286,35 @@ On success, the cart is cleared server-side automatically. Stock is decremented 
 checkout time (for `trackInventory` products); if any item's stock is insufficient, the whole
 checkout fails with a `409` naming the specific product (§5) — surface that message directly.
 
-**`deliveryFee` is entirely client/caller-supplied today** — there is no delivery-zone or
-distance-based fee calculation on the backend yet. Antivaly needs to decide its fee logic
-(flat rate? free above a threshold?) and compute it client-side before calling checkout; the
-backend just records whatever number is sent. This is a known simplification, not a bug to
-work around cleverly — flag it if a fee calculator ends up needing server-side logic.
+**`deliveryFee` is now optional (changed 2026-08-15, main blueprint §9.7)** — omit it (or send
+`null`) to fall back to the Business's own `defaultDeliveryFee` (§6.2's `BusinessResponse`), set
+by BackOffice staff. There is still no delivery-zone or distance-based calculation — it's one
+flat number per Business, not computed per order. If Antivaly wants a different fee for
+different addresses/order sizes, that's still a client-side (or future backend) decision to
+make and pass explicitly; the flat default is just a sane fallback for the common case, not a
+replacement for real fee logic if one is needed.
+
+**`deliveryModuleEnabled` on the storefront response (added 2026-08-15, main blueprint §9.14)**
+tells you whether this Business runs a delivery workflow at all — some sellers are pickup-only
+or use a third-party courier. It doesn't change the checkout API's shape (`deliveryFee` still
+accepts any caller-supplied number regardless), but it's a signal worth reading: when `false`,
+consider hiding delivery-related copy/estimates and defaulting `deliveryFee` to `0` or a
+pickup-appropriate value rather than showing a delivery ETA that will never happen.
 
 **No payment gateway exists.** Checkout immediately creates the order with
 `paymentStatus: "Pending"` and `status: "Processing"` — effectively a cash-on-delivery flow
 today. Don't build a payment form expecting a gateway redirect/webhook; there's nothing on the
-backend for it to talk to yet. If a payment integration is needed before launch, that's
-backend work to request, not something this app can fake convincingly.
+backend for it to talk to yet. **Business staff can now mark an order paid manually** (added
+2026-08-15, main blueprint §9.6, a BackOffice-only action) — so `paymentStatus` can genuinely
+change to `"Paid"` after checkout, just never automatically or from anything this app calls. If
+a payment integration is needed before launch, that's backend work to request, not something
+this app can fake convincingly.
+
+**Order status now has a real state machine server-side (main blueprint §9.7)** — an order
+predictably moves `Processing`→`Confirmed`→`OutForDelivery`→`Delivered`, or to `Cancelled` from
+any of the pre-delivery states, or to `Refunded` only after `Delivered`. `statusHistory` (§6.4's
+`OrderResponse`) now exposes the full timeline with timestamps — build the order-detail page's
+tracking view directly from that array instead of just showing the current `status`.
 
 **Cancellation** only works while `status` is `PendingPayment`, `Processing`, or `Confirmed` —
 past that (`OutForDelivery` or later) the API returns `409` and the order can't be
@@ -280,12 +332,15 @@ self-cancelled by the customer. Restocks items automatically on success.
 3. **Product detail** — `GET /api/shop/{slug}/products/{productId}`. SSG/ISR candidate (or
    SSR if wanting always-fresh stock counts — `stockQuantity` can go stale under ISR).
 4. **Register / Login** — `POST /api/shop/{slug}/auth/register` / `.../login`.
-5. **Cart** — full CRUD per §6.3, client-rendered (needs auth).
-6. **Checkout** — address form → `POST /api/shop/orders/checkout`. Show the `409` stock
+5. **Forgot / reset password** (added 2026-08-15, §4) — worth building even though real email
+   delivery doesn't exist yet, so it's ready once a provider is chosen backend-side.
+6. **Cart** — full CRUD per §6.3, client-rendered (needs auth).
+7. **Checkout** — address form → `POST /api/shop/orders/checkout`. Show the `409` stock
    message inline against the offending item if checkout fails.
-7. **Order history** — `GET /api/shop/orders` list, `GET .../{orderId}` detail, cancel action
-   gated by `status` per §6.4's note.
-8. **Account / profile** — `GET`/`PUT /api/auth/me`.
+8. **Order history** — `GET /api/shop/orders` list, `GET .../{orderId}` detail with a real
+   status timeline built from `statusHistory` (§6.4), cancel action gated by `status` per
+   §6.4's note.
+9. **Account / profile** — `GET`/`PUT /api/auth/me`.
 
 ---
 

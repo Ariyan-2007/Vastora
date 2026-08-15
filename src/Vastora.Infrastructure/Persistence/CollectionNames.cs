@@ -15,7 +15,11 @@ internal static class CollectionNames
         [typeof(Coupon)] = "coupons",
         [typeof(Cart)] = "carts",
         [typeof(Order)] = "orders",
-        [typeof(DeliveryAgentProfile)] = "deliveryAgentProfiles"
+        [typeof(DeliveryAgentProfile)] = "deliveryAgentProfiles",
+        [typeof(PasswordResetToken)] = "passwordResetTokens",
+        [typeof(StockMovement)] = "stockMovements",
+        [typeof(LedgerEntry)] = "ledgerEntries",
+        [typeof(Expense)] = "expenses"
     };
 
     public static string For<T>() => Map.TryGetValue(typeof(T), out var name) ? name : $"{typeof(T).Name}s";

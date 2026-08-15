@@ -70,6 +70,20 @@ public class CategoryService(IMongoRepository<Category> categories) : ICategoryS
         await categories.DeleteAsync(categoryId, ct);
     }
 
+    public async Task<List<CategoryTreeNode>> GetTreeAsync(string businessId, CancellationToken ct = default)
+    {
+        var flat = await categories.FindAsync(c => c.BusinessId == businessId, ct);
+        var byParent = flat.OrderBy(c => c.SortOrder).ToLookup(c => c.ParentCategoryId);
+
+        List<CategoryTreeNode> Build(string? parentId) =>
+            byParent[parentId]
+                .Select(c => new CategoryTreeNode(
+                    c.Id, c.BusinessId, c.Name, c.Slug, c.Description, c.ImageUrl, c.SortOrder, c.IsActive, Build(c.Id)))
+                .ToList();
+
+        return Build(null);
+    }
+
     private async Task<Category> GetScopedAsync(string businessId, string categoryId, CancellationToken ct)
     {
         var category = await categories.GetByIdAsync(categoryId, ct);

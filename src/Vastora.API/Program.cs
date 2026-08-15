@@ -1,11 +1,16 @@
 using System.Reflection;
 using System.Text;
 using System.Text.Json.Serialization;
+using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.Extensions.FileProviders;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi;
+using Serilog;
 using Vastora.API.Authorization;
+using Vastora.API.Filters;
 using Vastora.API.Middleware;
 using Vastora.Application;
 using Vastora.Infrastructure;
@@ -25,6 +30,14 @@ catch (FileNotFoundException)
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Structured logging (§9.11) — console sink only, since no external log aggregator (Seq/ELK/
+// Datadog/...) is configured yet; swap/add sinks here once one exists to point at.
+builder.Host.UseSerilog((context, services, configuration) => configuration
+    .ReadFrom.Configuration(context.Configuration)
+    .ReadFrom.Services(services)
+    .Enrich.FromLogContext()
+    .WriteTo.Console());
+
 // Friendly aliases: accept a plain MONGODB_URI / MONGODB_CONNECTION_STRING env var in addition
 // to the strict MongoDb__ConnectionString double-underscore form ASP.NET Core expects.
 // appsettings.json ships an empty "ConnectionString" placeholder, so treat blank as unset too.
@@ -38,7 +51,12 @@ if (!string.IsNullOrWhiteSpace(mongoConnectionString))
     builder.Configuration["MongoDb:ConnectionString"] = mongoConnectionString;
 }
 
-builder.Services.AddControllers()
+builder.Services.AddControllers(options =>
+    {
+        // Auto-runs the registered FluentValidation IValidator<T> (if any) for every action
+        // argument before the action body executes — see ValidationActionFilter for the "why".
+        options.Filters.Add<ValidationActionFilter>();
+    })
     .AddJsonOptions(options =>
     {
         // Enums cross the wire as readable names ("TenantOwner") instead of raw ints (2) —
@@ -108,11 +126,43 @@ builder.Services.AddAuthorization(options =>
 });
 
 const string CorsPolicy = "VastoraCors";
+var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ?? [];
 builder.Services.AddCors(options =>
 {
-    // Wide open for foundation-phase API development; tighten to real client origins before launch.
-    options.AddPolicy(CorsPolicy, policy => policy.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod());
+    options.AddPolicy(CorsPolicy, policy =>
+    {
+        if (allowedOrigins.Length > 0)
+        {
+            // Real client origins configured (§9.11) — restrict to exactly those.
+            policy.WithOrigins(allowedOrigins).AllowAnyHeader().AllowAnyMethod();
+        }
+        else
+        {
+            // Cors:AllowedOrigins isn't set — wide open, fine for foundation-phase API
+            // development against Swagger/Postman. Set it in config before real client traffic.
+            policy.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod();
+        }
+    });
 });
+
+// A generous global limit (§9.11) — this is abuse protection, not a business-tier throttle;
+// SubscriptionPlanLimits (§9.9) already governs the things that actually matter per plan.
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 100,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0
+            }));
+});
+
+builder.Services.AddHealthChecks()
+    .AddCheck<MongoHealthCheck>("mongodb");
 
 var app = builder.Build();
 
@@ -122,12 +172,29 @@ using (var scope = app.Services.CreateScope())
     await initializer.RunAsync();
 }
 
+app.UseSerilogRequestLogging();
+
 app.UseSwagger();
 app.UseSwaggerUI();
 
 app.UseMiddleware<ExceptionHandlingMiddleware>();
 
 app.UseCors(CorsPolicy);
+
+app.UseRateLimiter();
+
+app.MapHealthChecks("/health");
+
+// Serves whatever LocalFileStorageService wrote (§9.5, product image uploads) — physical path
+// must match LocalFileStorageService's UploadsRoot exactly. Public, no auth: product images are
+// meant to be publicly viewable, same as any other product data on the public Shop.
+var uploadsPath = Path.Combine(AppContext.BaseDirectory, "wwwroot", "uploads");
+Directory.CreateDirectory(uploadsPath);
+app.UseStaticFiles(new StaticFileOptions
+{
+    FileProvider = new PhysicalFileProvider(uploadsPath),
+    RequestPath = "/uploads"
+});
 
 app.UseAuthentication();
 app.UseMiddleware<CurrentUserMiddleware>();

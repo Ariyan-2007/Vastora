@@ -14,4 +14,13 @@ public interface IAuthService
     Task<AuthResponse> RefreshAsync(RefreshTokenRequest request, string ip, CancellationToken ct = default);
 
     Task LogoutAsync(string refreshToken, CancellationToken ct = default);
+
+    /// <summary>BackOffice/SuperOffice/Platform realm — always succeeds, doesn't reveal whether the email exists (§9.10).</summary>
+    Task RequestPasswordResetAsync(string email, CancellationToken ct = default);
+
+    /// <summary>Shop realm, scoped to one Business's Customers by slug — same non-enumeration behavior (§9.10).</summary>
+    Task RequestStorefrontPasswordResetAsync(string businessSlug, string email, CancellationToken ct = default);
+
+    /// <summary>Shared by every realm — the token itself identifies the account (§9.10).</summary>
+    Task ResetPasswordAsync(string token, string newPassword, CancellationToken ct = default);
 }

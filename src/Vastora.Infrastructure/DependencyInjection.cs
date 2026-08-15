@@ -2,7 +2,9 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Vastora.Application.Common.Interfaces;
 using Vastora.Infrastructure.Identity;
+using Vastora.Infrastructure.Notifications;
 using Vastora.Infrastructure.Persistence;
+using Vastora.Infrastructure.Storage;
 
 namespace Vastora.Infrastructure;
 
@@ -18,6 +20,8 @@ public static class DependencyInjection
 
         services.AddSingleton<IPasswordHasher, PasswordHasher>();
         services.AddSingleton<IJwtTokenService, JwtTokenService>();
+        services.AddSingleton<IFileStorageService, LocalFileStorageService>();
+        services.AddSingleton<INotificationService, LoggingNotificationService>();
 
         services.AddScoped<DatabaseInitializer>();
 

@@ -21,4 +21,7 @@ public interface IBusinessService
     Task<BusinessResponse> UpdateAsync(string tenantId, string businessId, UpdateBusinessRequest request, CancellationToken ct = default);
 
     Task<BusinessResponse> UpdateStatusAsync(string tenantId, string businessId, BusinessStatus status, CancellationToken ct = default);
+
+    /// <summary>Toggles whether this Business uses the DeliveryAgent workflow — see Business.DeliveryModuleEnabled.</summary>
+    Task<BusinessResponse> UpdateDeliveryModuleAsync(string tenantId, string businessId, bool enabled, CancellationToken ct = default);
 }

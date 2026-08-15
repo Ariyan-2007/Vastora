@@ -20,6 +20,14 @@ public class CategoriesController(ICurrentUserContext currentUser, ICategoryServ
         return Ok(result);
     }
 
+    /// <summary>Same Categories as GetAll, nested by ParentCategoryId — §9.5.</summary>
+    [HttpGet("tree")]
+    public async Task<ActionResult<List<CategoryTreeNode>>> GetTree(string businessId, CancellationToken ct)
+    {
+        var result = await categoryService.GetTreeAsync(businessId, ct);
+        return Ok(result);
+    }
+
     [HttpGet("{categoryId}")]
     public async Task<ActionResult<CategoryResponse>> GetById(string businessId, string categoryId, CancellationToken ct)
     {
@@ -42,6 +50,7 @@ public class CategoriesController(ICurrentUserContext currentUser, ICategoryServ
     }
 
     [HttpDelete("{categoryId}")]
+    [Authorize(Roles = $"{nameof(UserRole.PlatformSuperAdmin)},{nameof(UserRole.TenantOwner)},{nameof(UserRole.BusinessAdmin)}")]
     public async Task<IActionResult> Delete(string businessId, string categoryId, CancellationToken ct)
     {
         await categoryService.DeleteAsync(ResolvedTenantId, businessId, categoryId, ct);

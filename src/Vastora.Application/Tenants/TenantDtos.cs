@@ -36,3 +36,21 @@ public record TenantSignUpResponse(TenantResponse Tenant, BusinessResponse Busin
 public record UpdateTenantStatusRequest(TenantStatus Status);
 
 public record UpdateTenantPlanRequest(SubscriptionPlan Plan);
+
+public record UpdateTenantTypeRequest(TenantType Type);
+
+/// <summary>Current usage vs. the plan's per-Business limits (§9.9) for one Business under a Tenant.</summary>
+public record BusinessUsageResponse(
+    string BusinessId,
+    string BusinessName,
+    int StaffCount,
+    int? MaxStaffPerBusiness,
+    int ProductCount,
+    int? MaxProductsPerBusiness);
+
+/// <summary>Tenant-wide usage vs. SubscriptionPlanLimits — null limits mean unlimited (Enterprise).</summary>
+public record TenantUsageResponse(
+    SubscriptionPlan Plan,
+    int BusinessCount,
+    int? MaxBusinesses,
+    List<BusinessUsageResponse> Businesses);

@@ -27,4 +27,13 @@ public class TenantsController(ICurrentUserContext currentUser, ITenantService t
         var result = await tenantService.GetByIdAsync(CurrentUser.TenantId, ct);
         return Ok(result);
     }
+
+    /// <summary>Current usage vs. plan limits (§9.9) — Businesses owned, and staff/products per Business.</summary>
+    [HttpGet("me/usage")]
+    [Authorize(Roles = nameof(UserRole.TenantOwner))]
+    public async Task<ActionResult<TenantUsageResponse>> GetMyUsage(CancellationToken ct)
+    {
+        var result = await tenantService.GetUsageAsync(CurrentUser.TenantId, ct);
+        return Ok(result);
+    }
 }
