@@ -18,5 +18,8 @@ public interface IProductService
 
     Task<ProductResponse> UpdateStatusAsync(string tenantId, string businessId, string productId, ProductStatus status, CancellationToken ct = default);
 
+    /// <summary>Appends an already-stored image's URL to Product.Images — see IFileStorageService for the storage step (§9.5).</summary>
+    Task<ProductResponse> AddImageAsync(string tenantId, string businessId, string productId, string imageUrl, CancellationToken ct = default);
+
     Task DeleteAsync(string tenantId, string businessId, string productId, CancellationToken ct = default);
 }

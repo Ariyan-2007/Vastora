@@ -43,6 +43,15 @@ public class OrdersController(ICurrentUserContext currentUser, IOrderService ord
         return Ok(result);
     }
 
+    /// <summary>Manual payment recording for the cash-on-delivery flow (§9.6) — not staff-restricted beyond the controller's usual set.</summary>
+    [HttpPatch("{orderId}/payment-status")]
+    [Authorize(Roles = $"{nameof(UserRole.PlatformSuperAdmin)},{nameof(UserRole.TenantOwner)},{nameof(UserRole.BusinessAdmin)},{nameof(UserRole.BusinessStaff)}")]
+    public async Task<ActionResult<OrderResponse>> UpdatePaymentStatus(string businessId, string orderId, UpdatePaymentStatusRequest request, CancellationToken ct)
+    {
+        var result = await orderService.UpdatePaymentStatusAsync(ResolvedTenantId, businessId, orderId, request, ct);
+        return Ok(result);
+    }
+
     [HttpPatch("{orderId}/assign-delivery")]
     [Authorize(Roles = $"{nameof(UserRole.PlatformSuperAdmin)},{nameof(UserRole.TenantOwner)},{nameof(UserRole.BusinessAdmin)},{nameof(UserRole.BusinessStaff)}")]
     public async Task<ActionResult<OrderResponse>> AssignDelivery(string businessId, string orderId, AssignDeliveryAgentRequest request, CancellationToken ct)

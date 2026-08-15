@@ -1,15 +1,31 @@
+using System.Text.RegularExpressions;
+using MongoDB.Bson;
 using Vastora.Application.Common;
 using Vastora.Application.Common.Exceptions;
 using Vastora.Application.Common.Interfaces;
+using Vastora.Application.Tenants;
 using Vastora.Domain.Entities;
 using Vastora.Domain.Enums;
 
 namespace Vastora.Application.Products;
 
-public class ProductService(IMongoRepository<Product> products) : IProductService
+public class ProductService(IMongoRepository<Product> products, IMongoRepository<TenantAccount> tenants) : IProductService
 {
     public async Task<ProductResponse> CreateAsync(string tenantId, string businessId, CreateProductRequest request, CancellationToken ct = default)
     {
+        var tenant = await tenants.GetByIdAsync(tenantId, ct)
+            ?? throw new NotFoundException(nameof(TenantAccount), tenantId);
+        var limits = SubscriptionPlanLimits.For(tenant.Plan);
+        if (limits.MaxProductsPerBusiness is int maxProducts)
+        {
+            var productCount = await products.CountAsync(p => p.BusinessId == businessId, ct);
+            if (productCount >= maxProducts)
+            {
+                throw new ConflictException(
+                    $"Your '{tenant.Plan}' plan allows up to {maxProducts} product(s) per Business. Upgrade your plan to add more.");
+            }
+        }
+
         var slug = await GenerateUniqueSlugAsync(businessId, request.Slug ?? request.Name, ct);
 
         var product = new Product
@@ -27,7 +43,8 @@ public class ProductService(IMongoRepository<Product> products) : IProductServic
             TrackInventory = request.TrackInventory,
             Images = request.Images ?? [],
             Tags = request.Tags ?? [],
-            Status = ProductStatus.Draft
+            Status = ProductStatus.Draft,
+            Variants = MapVariants(request.Variants)
         };
 
         await products.AddAsync(product, ct);
@@ -42,18 +59,38 @@ public class ProductService(IMongoRepository<Product> products) : IProductServic
 
     public async Task<List<ProductResponse>> GetPublicCatalogAsync(string businessId, string? categoryId, string? search, CancellationToken ct = default)
     {
-        var list = await products.FindAsync(p => p.BusinessId == businessId && p.Status == ProductStatus.Active, ct);
+        var hasCategory = !string.IsNullOrWhiteSpace(categoryId);
+        var hasSearch = !string.IsNullOrWhiteSpace(search);
 
-        if (!string.IsNullOrWhiteSpace(categoryId))
+        // Filtering is pushed into the server-side query (not fetch-then-LINQ-filter) — §9.5.
+        // Regex.IsMatch(field, pattern, RegexOptions.IgnoreCase) is the MongoDB LINQ provider's
+        // documented translation for case-insensitive substring matching; Regex.Escape guards
+        // against the search string being interpreted as a regex pattern instead of a literal.
+        List<Product> list;
+        if (hasCategory && hasSearch)
         {
-            list = list.Where(p => p.CategoryId == categoryId).ToList();
+            var pattern = Regex.Escape(search!);
+            list = await products.FindAsync(p =>
+                p.BusinessId == businessId && p.Status == ProductStatus.Active && p.CategoryId == categoryId
+                && (Regex.IsMatch(p.Name, pattern, RegexOptions.IgnoreCase) || Regex.IsMatch(p.Description, pattern, RegexOptions.IgnoreCase)),
+                ct);
         }
-
-        if (!string.IsNullOrWhiteSpace(search))
+        else if (hasCategory)
         {
-            list = list.Where(p => p.Name.Contains(search, StringComparison.OrdinalIgnoreCase)
-                                    || p.Description.Contains(search, StringComparison.OrdinalIgnoreCase))
-                       .ToList();
+            list = await products.FindAsync(p =>
+                p.BusinessId == businessId && p.Status == ProductStatus.Active && p.CategoryId == categoryId, ct);
+        }
+        else if (hasSearch)
+        {
+            var pattern = Regex.Escape(search!);
+            list = await products.FindAsync(p =>
+                p.BusinessId == businessId && p.Status == ProductStatus.Active
+                && (Regex.IsMatch(p.Name, pattern, RegexOptions.IgnoreCase) || Regex.IsMatch(p.Description, pattern, RegexOptions.IgnoreCase)),
+                ct);
+        }
+        else
+        {
+            list = await products.FindAsync(p => p.BusinessId == businessId && p.Status == ProductStatus.Active, ct);
         }
 
         return list.Select(Map).ToList();
@@ -80,10 +117,12 @@ public class ProductService(IMongoRepository<Product> products) : IProductServic
         product.CompareAtPrice = request.CompareAtPrice;
         product.DiscountPercent = request.DiscountPercent;
         product.DiscountExpiresAt = request.DiscountExpiresAt;
-        product.StockQuantity = request.StockQuantity;
         product.TrackInventory = request.TrackInventory;
+        product.ReorderThreshold = request.ReorderThreshold;
+        product.ReorderQuantity = request.ReorderQuantity;
         product.Images = request.Images;
         product.Tags = request.Tags;
+        product.Variants = MapVariants(request.Variants);
         product.UpdatedAt = DateTime.UtcNow;
 
         await products.UpdateAsync(product, ct);
@@ -99,6 +138,20 @@ public class ProductService(IMongoRepository<Product> products) : IProductServic
         }
 
         product.Status = status;
+        product.UpdatedAt = DateTime.UtcNow;
+        await products.UpdateAsync(product, ct);
+        return Map(product);
+    }
+
+    public async Task<ProductResponse> AddImageAsync(string tenantId, string businessId, string productId, string imageUrl, CancellationToken ct = default)
+    {
+        var product = await GetScopedAsync(businessId, productId, ct);
+        if (product.TenantId != tenantId)
+        {
+            throw new NotFoundException(nameof(Product), productId);
+        }
+
+        product.Images.Add(imageUrl);
         product.UpdatedAt = DateTime.UtcNow;
         await products.UpdateAsync(product, ct);
         return Map(product);
@@ -143,8 +196,19 @@ public class ProductService(IMongoRepository<Product> products) : IProductServic
         }
     }
 
+    private static List<ProductVariant> MapVariants(List<ProductVariantRequest>? requests) =>
+        requests?.Select(v => new ProductVariant
+        {
+            Id = string.IsNullOrWhiteSpace(v.Id) ? ObjectId.GenerateNewId().ToString() : v.Id,
+            AttributeSummary = v.AttributeSummary,
+            Sku = v.Sku,
+            PriceOverride = v.PriceOverride,
+            StockQuantity = v.StockQuantity
+        }).ToList() ?? [];
+
     private static ProductResponse Map(Product p) => new(
         p.Id, p.BusinessId, p.CategoryId, p.Name, p.Slug, p.Sku, p.Description, p.Price, p.CompareAtPrice,
         p.DiscountPercent, p.DiscountExpiresAt, p.EffectivePrice, p.StockQuantity, p.TrackInventory,
-        p.Images, p.Tags, p.Status);
+        p.ReorderThreshold, p.ReorderQuantity, p.Images, p.Tags, p.Status,
+        p.Variants.Select(v => new ProductVariantResponse(v.Id, v.AttributeSummary, v.Sku, v.PriceOverride, v.StockQuantity)).ToList());
 }

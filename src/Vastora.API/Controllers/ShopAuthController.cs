@@ -25,5 +25,13 @@ public class ShopAuthController(ICurrentUserContext currentUser, IAuthService au
         return Ok(result);
     }
 
+    /// <summary>Always 204s, whether or not the email matches a Customer account on this Business (§9.10).</summary>
+    [HttpPost("forgot-password")]
+    public async Task<IActionResult> ForgotPassword(string businessSlug, ForgotPasswordRequest request, CancellationToken ct)
+    {
+        await authService.RequestStorefrontPasswordResetAsync(businessSlug, request.Email, ct);
+        return NoContent();
+    }
+
     private string RemoteIp => HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
 }

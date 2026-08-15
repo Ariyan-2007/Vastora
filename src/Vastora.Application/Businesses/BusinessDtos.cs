@@ -17,6 +17,7 @@ public record BusinessResponse(
     string ContactPhone,
     BusinessStatus Status,
     bool DeliveryModuleEnabled,
+    decimal DefaultDeliveryFee,
     DateTime CreatedAt);
 
 public record CreateBusinessRequest(
@@ -35,6 +36,7 @@ public record UpdateBusinessRequest(
     string ThemeColor,
     string ContactEmail,
     string ContactPhone,
-    string Currency);
+    string Currency,
+    decimal DefaultDeliveryFee);
 
 public record UpdateDeliveryModuleRequest(bool Enabled);

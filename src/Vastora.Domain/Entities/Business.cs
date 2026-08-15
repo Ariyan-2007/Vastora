@@ -45,4 +45,7 @@ public class Business : BaseEntity, ITenantScoped
     /// in-flight assignments are left alone.
     /// </summary>
     public bool DeliveryModuleEnabled { get; set; } = true;
+
+    /// <summary>Flat delivery fee used at checkout when the caller doesn't supply one — §9.7. No zone/distance logic yet.</summary>
+    public decimal DefaultDeliveryFee { get; set; }
 }

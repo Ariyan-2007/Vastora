@@ -19,6 +19,15 @@ public class OrderStatusEvent
     public string Note { get; set; } = string.Empty;
 }
 
+/// <summary>Audit trail for PaymentStatus, parallel to OrderStatusEvent — §9.6. Also what §9.16a's
+/// sales ledger reads from to know exactly when an order was marked Paid.</summary>
+public class PaymentStatusEvent
+{
+    public PaymentStatus Status { get; set; }
+    public DateTime Timestamp { get; set; } = DateTime.UtcNow;
+    public string Note { get; set; } = string.Empty;
+}
+
 public class Order : BaseEntity, ITenantScoped, IBusinessScoped
 {
     public string TenantId { get; set; } = string.Empty;
@@ -50,6 +59,8 @@ public class Order : BaseEntity, ITenantScoped, IBusinessScoped
     public string? DeliveryAgentUserId { get; set; }
 
     public List<OrderStatusEvent> StatusHistory { get; set; } = [];
+
+    public List<PaymentStatusEvent> PaymentStatusHistory { get; set; } = [];
 
     public DateTime PlacedAt { get; set; } = DateTime.UtcNow;
 }

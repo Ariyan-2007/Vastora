@@ -1,6 +1,8 @@
 using System.Reflection;
 using FluentValidation;
 using Microsoft.Extensions.DependencyInjection;
+using Vastora.Application.Accounting;
+using Vastora.Application.Analytics;
 using Vastora.Application.Auth;
 using Vastora.Application.Businesses;
 using Vastora.Application.Cart;
@@ -9,6 +11,7 @@ using Vastora.Application.Common;
 using Vastora.Application.Common.Interfaces;
 using Vastora.Application.Coupons;
 using Vastora.Application.DeliveryAgents;
+using Vastora.Application.Inventory;
 using Vastora.Application.Orders;
 using Vastora.Application.Products;
 using Vastora.Application.Tenants;
@@ -33,6 +36,9 @@ public static class DependencyInjection
         services.AddScoped<ICartService, CartService>();
         services.AddScoped<IOrderService, OrderService>();
         services.AddScoped<IDeliveryAgentService, DeliveryAgentService>();
+        services.AddScoped<IAnalyticsService, AnalyticsService>();
+        services.AddScoped<IInventoryService, InventoryService>();
+        services.AddScoped<IAccountingService, AccountingService>();
 
         services.AddValidatorsFromAssembly(Assembly.GetExecutingAssembly());
 

@@ -5,4 +5,7 @@
     <Project Path="src/Vastora.Domain/Vastora.Domain.csproj" />
     <Project Path="src/Vastora.Infrastructure/Vastora.Infrastructure.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Vastora.Application.Tests/Vastora.Application.Tests.csproj" />
+  </Folder>
 </Solution>

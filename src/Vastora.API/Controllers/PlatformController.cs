@@ -39,4 +39,20 @@ public class PlatformController(ICurrentUserContext currentUser, ITenantService 
         var result = await tenantService.UpdatePlanAsync(tenantId, request.Plan, ct);
         return Ok(result);
     }
+
+    /// <summary>Any Tenant's usage vs. its plan limits (§9.9) — same shape as TenantOwner's own `GET /api/tenants/me/usage`.</summary>
+    [HttpGet("{tenantId}/usage")]
+    public async Task<ActionResult<TenantUsageResponse>> GetUsage(string tenantId, CancellationToken ct)
+    {
+        var result = await tenantService.GetUsageAsync(tenantId, ct);
+        return Ok(result);
+    }
+
+    /// <summary>Single↔MultiBusiness account-shape change (§9.4) — Platform-only, no self-serve flow yet.</summary>
+    [HttpPatch("{tenantId}/type")]
+    public async Task<ActionResult<TenantResponse>> UpdateType(string tenantId, UpdateTenantTypeRequest request, CancellationToken ct)
+    {
+        var result = await tenantService.UpdateTypeAsync(tenantId, request.Type, ct);
+        return Ok(result);
+    }
 }

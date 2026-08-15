@@ -36,6 +36,24 @@ public class AuthController(ICurrentUserContext currentUser, IAuthService authSe
         return NoContent();
     }
 
+    /// <summary>Always 204s, whether or not the email matches an account (§9.10) — don't build UI that distinguishes the two.</summary>
+    [HttpPost("forgot-password")]
+    [AllowAnonymous]
+    public async Task<IActionResult> ForgotPassword(ForgotPasswordRequest request, CancellationToken ct)
+    {
+        await authService.RequestPasswordResetAsync(request.Email, ct);
+        return NoContent();
+    }
+
+    /// <summary>Shared across every realm (BackOffice/SuperOffice/Platform/Shop) — the token identifies the account.</summary>
+    [HttpPost("reset-password")]
+    [AllowAnonymous]
+    public async Task<IActionResult> ResetPassword(ResetPasswordRequest request, CancellationToken ct)
+    {
+        await authService.ResetPasswordAsync(request.Token, request.NewPassword, ct);
+        return NoContent();
+    }
+
     [HttpGet("me")]
     [Authorize]
     public async Task<ActionResult<UserSummaryResponse>> Me(CancellationToken ct)

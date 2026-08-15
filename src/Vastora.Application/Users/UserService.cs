@@ -1,6 +1,7 @@
 using Vastora.Application.Auth;
 using Vastora.Application.Common.Exceptions;
 using Vastora.Application.Common.Interfaces;
+using Vastora.Application.Tenants;
 using Vastora.Domain.Entities;
 using Vastora.Domain.Enums;
 
@@ -10,6 +11,7 @@ public class UserService(
     IMongoRepository<AppUser> users,
     IMongoRepository<DeliveryAgentProfile> deliveryAgentProfiles,
     IMongoRepository<Business> businesses,
+    IMongoRepository<TenantAccount> tenants,
     IPasswordHasher passwordHasher) : IUserService
 {
     private static readonly UserRole[] CreatableStaffRoles =
@@ -29,6 +31,22 @@ public class UserService(
             if (!business.DeliveryModuleEnabled)
             {
                 throw new ConflictException("Delivery module is disabled for this business.");
+            }
+        }
+
+        var tenant = await tenants.GetByIdAsync(tenantId, ct)
+            ?? throw new NotFoundException(nameof(TenantAccount), tenantId);
+        var limits = SubscriptionPlanLimits.For(tenant.Plan);
+        if (limits.MaxStaffPerBusiness is int maxStaff)
+        {
+            var staffCount = await users.CountAsync(
+                u => u.BusinessId == businessId
+                     && (u.Role == UserRole.BusinessAdmin || u.Role == UserRole.BusinessStaff || u.Role == UserRole.DeliveryAgent),
+                ct);
+            if (staffCount >= maxStaff)
+            {
+                throw new ConflictException(
+                    $"Your '{tenant.Plan}' plan allows up to {maxStaff} staff member(s) per Business. Upgrade your plan to add more.");
             }
         }
 

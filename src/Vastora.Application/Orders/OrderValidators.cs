@@ -29,3 +29,11 @@ public class AssignDeliveryAgentRequestValidator : AbstractValidator<AssignDeliv
         RuleFor(x => x.DeliveryAgentUserId).NotEmpty();
     }
 }
+
+public class UpdatePaymentStatusRequestValidator : AbstractValidator<UpdatePaymentStatusRequest>
+{
+    public UpdatePaymentStatusRequestValidator()
+    {
+        RuleFor(x => x.Status).IsInEnum();
+    }
+}

@@ -1,6 +1,7 @@
 using Vastora.Application.Common;
 using Vastora.Application.Common.Exceptions;
 using Vastora.Application.Common.Interfaces;
+using Vastora.Application.Tenants;
 using Vastora.Domain.Entities;
 using Vastora.Domain.Enums;
 
@@ -20,6 +21,13 @@ public class BusinessService(
         {
             throw new ConflictException(
                 "This tenant is subscribed as a single-business account and already owns a Business. Upgrade to a multi-business plan to add another.");
+        }
+
+        var limits = SubscriptionPlanLimits.For(tenant.Plan);
+        if (limits.MaxBusinesses is int maxBusinesses && existingCount >= maxBusinesses)
+        {
+            throw new ConflictException(
+                $"Your '{tenant.Plan}' plan allows up to {maxBusinesses} Business(es). Upgrade your plan to add another.");
         }
 
         var slug = await GenerateUniqueSlugAsync(request.Slug ?? request.Name, ct);
@@ -78,6 +86,7 @@ public class BusinessService(
         business.ContactEmail = request.ContactEmail;
         business.ContactPhone = request.ContactPhone;
         business.Currency = request.Currency;
+        business.DefaultDeliveryFee = request.DefaultDeliveryFee;
         business.UpdatedAt = DateTime.UtcNow;
 
         await businesses.UpdateAsync(business, ct);
@@ -132,5 +141,6 @@ public class BusinessService(
 
     private static BusinessResponse Map(Business b) => new(
         b.Id, b.TenantId, b.Name, b.Slug, b.CustomDomain, b.Description, b.LogoUrl, b.BannerUrl,
-        b.ThemeColor, b.Currency, b.ContactEmail, b.ContactPhone, b.Status, b.DeliveryModuleEnabled, b.CreatedAt);
+        b.ThemeColor, b.Currency, b.ContactEmail, b.ContactPhone, b.Status, b.DeliveryModuleEnabled,
+        b.DefaultDeliveryFee, b.CreatedAt);
 }
