@@ -10,13 +10,14 @@ using Vastora.Domain.Enums;
 namespace Vastora.API.Controllers;
 
 /// <summary>
-/// Checkout, a customer's own orders, and returns. Checkout is <c>[AllowAnonymous]</c> so guests
-/// can buy (§9.27); everything that lists or acts on order history still requires a Customer JWT,
-/// except the deliberate guest lookup-by-order-number-and-email route.
+/// Checkout, a customer's own orders, and returns. Checkout, preview, and guest lookup are
+/// <c>[AllowAnonymous]</c> so guests can buy (§9.27); everything that lists or acts on order
+/// history requires a Customer JWT. <c>[AllowAnonymous]</c> is applied per-action rather than on
+/// the controller because ASP.NET Core lets a controller-level <c>[AllowAnonymous]</c> silently
+/// override every action-level <c>[Authorize]</c> in the same controller.
 /// </summary>
 [Tags("Shop - Orders")]
 [Route("api/shop/orders")]
-[AllowAnonymous]
 public class ShopOrdersController(
     ICurrentUserContext currentUser,
     IOrderService orderService,
@@ -30,6 +31,7 @@ public class ShopOrdersController(
     /// </summary>
     [HttpPost("checkout")]
     [Idempotent]
+    [AllowAnonymous]
     public async Task<ActionResult<OrderResponse>> Checkout(
         CheckoutRequest request, [FromQuery] string? businessId, [FromQuery] string? tenantId, CancellationToken ct)
     {
@@ -42,6 +44,7 @@ public class ShopOrdersController(
 
     /// <summary>Prices the cart without committing anything — no stock moves, no coupon usage burnt.</summary>
     [HttpPost("preview")]
+    [AllowAnonymous]
     public async Task<ActionResult<CheckoutPreviewResponse>> Preview(
         CheckoutRequest request, [FromQuery] string? businessId, CancellationToken ct)
     {
@@ -63,6 +66,7 @@ public class ShopOrdersController(
 
     /// <summary>§9.27. A guest has no account to list orders under, so the order number plus the email that placed it is the key.</summary>
     [HttpGet("lookup")]
+    [AllowAnonymous]
     public async Task<ActionResult<OrderResponse>> Lookup(
         [FromQuery] string businessId, [FromQuery] string orderNumber, [FromQuery] string email, CancellationToken ct)
     {

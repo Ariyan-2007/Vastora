@@ -12,16 +12,18 @@ namespace Vastora.API.Controllers;
 /// on first write and returns it as <c>guestToken</c>; the client sends it back thereafter.
 ///
 /// <c>[AllowAnonymous]</c> rather than Customer-only, because the whole point of guest checkout
-/// is that a shopper can fill a cart before they have an account.
+/// is that a shopper can fill a cart before they have an account. Applied per-action rather than
+/// on the controller because ASP.NET Core lets a controller-level <c>[AllowAnonymous]</c> silently
+/// override the one action here — <see cref="Merge"/> — that requires a Customer JWT.
 /// </summary>
 [Tags("Shop - Cart")]
 [Route("api/shop/cart")]
-[AllowAnonymous]
 public class ShopCartController(ICurrentUserContext currentUser, ICartService cartService) : VastoraControllerBase(currentUser)
 {
     private const string CartTokenHeader = "X-Cart-Token";
 
     [HttpGet]
+    [AllowAnonymous]
     public async Task<ActionResult<CartResponse>> Get([FromQuery] string? businessId, CancellationToken ct)
     {
         var result = await cartService.GetAsync(ResolveBusinessId(businessId), ResolveOwner(), ct);
@@ -29,6 +31,7 @@ public class ShopCartController(ICurrentUserContext currentUser, ICartService ca
     }
 
     [HttpPost("items")]
+    [AllowAnonymous]
     public async Task<ActionResult<CartResponse>> AddItem(AddCartItemRequest request, [FromQuery] string? businessId, [FromQuery] string? tenantId, CancellationToken ct)
     {
         var result = await cartService.AddItemAsync(
@@ -37,6 +40,7 @@ public class ShopCartController(ICurrentUserContext currentUser, ICartService ca
     }
 
     [HttpPut("items/{productId}")]
+    [AllowAnonymous]
     public async Task<ActionResult<CartResponse>> UpdateItem(string productId, UpdateCartItemRequest request, [FromQuery] string? businessId, CancellationToken ct)
     {
         var result = await cartService.UpdateItemAsync(ResolveBusinessId(businessId), ResolveOwner(), productId, request, ct);
@@ -44,6 +48,7 @@ public class ShopCartController(ICurrentUserContext currentUser, ICartService ca
     }
 
     [HttpDelete("items/{productId}")]
+    [AllowAnonymous]
     public async Task<ActionResult<CartResponse>> RemoveItem(string productId, [FromQuery] string? variantId, [FromQuery] string? businessId, CancellationToken ct)
     {
         var result = await cartService.RemoveItemAsync(ResolveBusinessId(businessId), ResolveOwner(), productId, variantId, ct);
@@ -51,6 +56,7 @@ public class ShopCartController(ICurrentUserContext currentUser, ICartService ca
     }
 
     [HttpPost("coupon")]
+    [AllowAnonymous]
     public async Task<ActionResult<CartResponse>> ApplyCoupon(ApplyCartCouponRequest request, [FromQuery] string? businessId, CancellationToken ct)
     {
         var result = await cartService.ApplyCouponAsync(ResolveBusinessId(businessId), ResolveOwner(), request, ct);
@@ -59,6 +65,7 @@ public class ShopCartController(ICurrentUserContext currentUser, ICartService ca
 
     /// <summary>§9.23. Separate from the legacy single coupon — several promotion codes can stack.</summary>
     [HttpPost("promotions")]
+    [AllowAnonymous]
     public async Task<ActionResult<CartResponse>> ApplyPromotion(ApplyCartCouponRequest request, [FromQuery] string? businessId, CancellationToken ct)
     {
         var result = await cartService.ApplyPromotionCodeAsync(ResolveBusinessId(businessId), ResolveOwner(), request, ct);
@@ -66,6 +73,7 @@ public class ShopCartController(ICurrentUserContext currentUser, ICartService ca
     }
 
     [HttpDelete("promotions/{code}")]
+    [AllowAnonymous]
     public async Task<ActionResult<CartResponse>> RemovePromotion(string code, [FromQuery] string? businessId, CancellationToken ct)
     {
         var result = await cartService.RemovePromotionCodeAsync(ResolveBusinessId(businessId), ResolveOwner(), code, ct);
@@ -86,6 +94,7 @@ public class ShopCartController(ICurrentUserContext currentUser, ICartService ca
     }
 
     [HttpDelete]
+    [AllowAnonymous]
     public async Task<IActionResult> Clear([FromQuery] string? businessId, CancellationToken ct)
     {
         await cartService.ClearAsync(ResolveBusinessId(businessId), ResolveOwner(), ct);

@@ -13,7 +13,6 @@ public class AccountingService(
     IMongoRepository<Order> orders,
     IMongoRepository<Business> businesses,
     IMongoRepository<ReturnRequest> returnRequests,
-    IMongoRepository<Product> products,
     IInventoryService inventoryService) : IAccountingService
 {
     public async Task<ExpenseResponse> CreateExpenseAsync(string tenantId, string businessId, CreateExpenseRequest request, string createdByUserId, CancellationToken ct = default)
