@@ -23,4 +23,10 @@ public interface IAuthService
 
     /// <summary>Shared by every realm — the token itself identifies the account (§9.10).</summary>
     Task ResetPasswordAsync(string token, string newPassword, CancellationToken ct = default);
+
+    /// <summary>§9.34. Issues (or re-issues) an email verification token, retiring any outstanding one.</summary>
+    Task RequestEmailVerificationAsync(string userId, CancellationToken ct = default);
+
+    /// <summary>§9.34. Shared by every realm — the token identifies the account, same as password reset.</summary>
+    Task VerifyEmailAsync(string token, CancellationToken ct = default);
 }

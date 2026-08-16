@@ -168,8 +168,35 @@ type UserSummaryResponse = {
 |---|---|---|
 | GET | `/api/shop/{slug}` | `BusinessResponse` — landing page data |
 | GET | `/api/shop/{slug}/categories` | `CategoryResponse[]` — active only, already filtered server-side |
-| GET | `/api/shop/{slug}/products?categoryId=&search=` | `ProductResponse[]` — both query params optional |
+| GET | `/api/shop/{slug}/products?...` | **`PagedResult<ProductResponse>`** — see the query below |
+| GET | `/api/shop/{slug}/products/facets?...` | `CatalogFacetsResponse` — filter values + counts |
 | GET | `/api/shop/{slug}/products/{productId}` | `ProductResponse`, or 404 if not `Active` |
+| GET | `/api/shop/{slug}/products/{productId}/reviews?page=&pageSize=` | `PagedResult<ReviewResponse>` — published only |
+| GET | `/api/shop/{slug}/products/{productId}/reviews/summary` | `ReviewSummaryResponse` — average + star histogram |
+| POST | `/api/shop/{slug}/reviews/{reviewId}/helpful` | `ReviewResponse` — anonymous, no auth |
+| GET | `/api/shop/{slug}/products/{productId}/also-bought` | `RecommendedProductResponse[]` — from real order history |
+| GET | `/api/shop/{slug}/products/{productId}/related` | `RecommendedProductResponse[]` — same category fallback |
+| GET | `/api/shop/{slug}/banners` | `ContentBlockResponse[]` — homepage slides, schedule already applied |
+| GET | `/api/shop/{slug}/menu` | `MenuNode[]` — nav tree, one level of nesting |
+| GET | `/api/shop/{slug}/pages` | `ContentBlockResponse[]` — About / Contact / Terms / Privacy |
+| GET | `/api/shop/{slug}/pages/{pageSlug}` | `ContentBlockResponse`, 404 if unpublished or out of schedule |
+
+> **⚠ Breaking change, 2026-08-16 (main blueprint §9.18).** `GET .../products` returns a paged
+> envelope now, not a bare array. Read `.items`. Every list endpoint across the whole API
+> changed the same way — see §6.5.
+
+**Catalog query (§9.29).** All optional, all evaluated server-side:
+
+```
+?categoryId=&search=&minPrice=&maxPrice=&brand=&tags=a&tags=b
+&inStockOnly=true&minRating=4&featuredOnly=true
+&sort=Relevance|Newest|PriceAscending|PriceDescending|TopRated|BestSelling|NameAscending
+&page=1&pageSize=24
+```
+
+`sort=Relevance` is the merchandising default: featured first, then the merchant's `sortWeight`,
+then newest. Build the filter sidebar from `/products/facets` — it is computed over the *same*
+filter as the listing, so its counts and the results can never disagree.
 
 ```ts
 type BusinessResponse = {
@@ -180,6 +207,22 @@ type BusinessResponse = {
   deliveryModuleEnabled: boolean;  // see note below
   defaultDeliveryFee: number;      // added 2026-08-15, main blueprint §9.7 — see §6.4
   createdAt: string;
+
+  // --- added 2026-08-16 (§9B). Read these to decide what to render at all. ---
+  tax: {
+    enabled: boolean;
+    defaultRatePercent: number;
+    // TRUE means catalog prices already contain tax — show them as-is and label them
+    // "incl. VAT". FALSE means tax is added at checkout; say so, or the total will surprise.
+    pricesIncludeTax: boolean;
+    taxShipping: boolean;
+    classRates: Record<string, number>;
+    registrationNumber: string;
+    displayName: string;           // "VAT" | "GST" | "Sales Tax" — use this, don't hardcode
+  };
+  returnWindowDays: number;        // 0 = this shop accepts no returns; hide the returns UI
+  reviewsEnabled: boolean;         // false = render no review UI at all
+  guestCheckoutEnabled: boolean;   // false = require login before checkout
 };
 type CategoryResponse = {
   id: string; businessId: string; name: string; slug: string;
@@ -198,62 +241,165 @@ type ProductResponse = {
   reorderThreshold: number | null; reorderQuantity: number | null;  // BackOffice-facing fields, not customer-relevant — safe to ignore
   images: string[]; tags: string[];
   status: "Active"; // public endpoints only ever return Active products
-  variants: ProductVariantResponse[];  // added 2026-08-15, main blueprint §9.5 — see note below
+  variants: ProductVariantResponse[];  // added 2026-08-15 (§9.5); BUYABLE since 2026-08-16 (§9.22) — see note below
+
+  // --- added 2026-08-16 (§9.25, §9.28) ---
+  averageRating: number;           // 0 when there are no published reviews yet
+  reviewCount: number;
+  brand: string;
+  barcode: string;
+  weightKg: number | null;
+  metaTitle: string;               // fall back to `name` when empty
+  metaDescription: string;         // fall back to a truncated `description` when empty
+  publishedAt: string | null;
+  unpublishedAt: string | null;
+  isFeatured: boolean;
+  sortWeight: number;
+  taxClass: string;
+  isAvailable: boolean;            // false = out of stock; prefer this over reading stockQuantity
+
+  // ALWAYS null on public endpoints. The server strips cost data from the public projection —
+  // if you ever see a number here you are calling a BackOffice route by mistake.
+  costPrice: null;
+  unitMargin: null;
 };
+
+// --- §9B response shapes ---
+type PagedResult<T> = {
+  items: T[];
+  page: number; pageSize: number; totalCount: number; totalPages: number;
+  hasNextPage: boolean; hasPreviousPage: boolean;
+};
+type CatalogFacetsResponse = {
+  categories: { value: string; count: number }[];
+  brands: { value: string; count: number }[];
+  tags: { value: string; count: number }[];
+  minPrice: number; maxPrice: number; inStockCount: number; totalCount: number;
+};
+type ReviewResponse = {
+  id: string; productId: string; customerName: string; rating: number;  // 1–5
+  title: string; body: string;
+  status: "Pending" | "Published" | "Rejected";  // public reads only ever return Published
+  isVerifiedPurchase: boolean;   // server-verified against real delivered orders — badge this
+  merchantReply: string | null; merchantRepliedAt: string | null;
+  helpfulCount: number; createdAt: string;
+};
+type ReviewSummaryResponse = {
+  productId: string; averageRating: number; reviewCount: number;
+  ratingCounts: Record<"1" | "2" | "3" | "4" | "5", number>;  // for the star histogram
+};
+type RecommendedProductResponse = {
+  productId: string; productName: string; slug: string;
+  effectivePrice: number; imageUrl: string | null; timesBoughtTogether: number;
+};
+type ContentBlockResponse = {
+  id: string; type: "Banner" | "Page" | "MenuItem" | "Article";
+  slug: string; title: string; subtitle: string; body: string;  // body is Markdown
+  imageUrl: string; linkUrl: string; linkLabel: string;
+  parentId: string | null; sortOrder: number; isPublished: boolean;
+  startsAt: string | null; endsAt: string | null;
+  metaTitle: string; metaDescription: string; isVisibleNow: boolean;
+};
+type MenuNode = { id: string; title: string; linkUrl: string; sortOrder: number; children: MenuNode[] };
 ```
 
-`search` does a simple case-insensitive substring match against product name/description,
-evaluated server-side by MongoDB (not an in-memory scan anymore, but still no fuzzy matching or
-relevance ranking). Fine for a small catalog; revisit if Antivaly's catalog grows large (backend
-roadmap flags this as a known scaling limit).
+**Variants are now buyable (§9.22).** If `variants` is non-empty the customer *must* pick one
+before adding to cart — the API rejects a bare `productId` for such a product. Use the variant's
+`priceOverride` when set (falling back to `effectivePrice`) and its own `stockQuantity`, which is
+the authority; the product-level `stockQuantity` is a separate pool for variant-less products.
 
-**Product variants exist but aren't purchasable through this app's API surface (§9.5).** A
-product can have BackOffice-managed variants (e.g. "Red / Large"), and `variants` is returned
-here so a product detail page *can* display them (size/color chips, say), but there is no way
-to add a specific variant to the cart or checkout with one selected — `POST /api/shop/cart/items`
-only ever takes a bare `productId`. If a real variant-aware storefront is needed, that's a
-backend gap to flag (Cart/Order would need redesigning to reference a variant, not just a
-product), not something to fake by, say, encoding the variant into a query param the backend
-will silently ignore.
+`search` is still a case-insensitive substring match against name/description/brand, evaluated
+by MongoDB — no fuzzy matching, no typo tolerance, no relevance ranking. **It is also an
+unanchored regex, which cannot use an index**, so it costs a collection scan per query. Fine at
+Antivaly's scale; the backend flags Atlas Search as the fix if the catalog grows (§9.29). Prefer
+the structured facet filters over free-text search wherever the UI allows it.
 
-### 6.3 Cart — Customer only, **not slug-rooted**
+### 6.3 Cart — guests welcome since 2026-08-16, **not slug-rooted**
 
 | Method | Path | Body | Returns |
 |---|---|---|---|
-| GET | `/api/shop/cart` | — | `CartResponse` |
-| POST | `/api/shop/cart/items` | `{ productId, quantity }` | `CartResponse` |
-| PUT | `/api/shop/cart/items/{productId}` | `{ quantity }` (0 removes the item) | `CartResponse` |
-| DELETE | `/api/shop/cart/items/{productId}` | — | `CartResponse` |
-| POST | `/api/shop/cart/coupon` | `{ code }` | `CartResponse` |
-| DELETE | `/api/shop/cart` | — | 204 (clears the whole cart) |
+| GET | `/api/shop/cart?businessId=` | — | `CartResponse` |
+| POST | `/api/shop/cart/items?businessId=&tenantId=` | `{ productId, quantity, variantId? }` | `CartResponse` |
+| PUT | `/api/shop/cart/items/{productId}?businessId=` | `{ quantity, variantId? }` (0 removes) | `CartResponse` |
+| DELETE | `/api/shop/cart/items/{productId}?variantId=&businessId=` | — | `CartResponse` |
+| POST | `/api/shop/cart/coupon?businessId=` | `{ code }` | `CartResponse` |
+| POST | `/api/shop/cart/promotions?businessId=` | `{ code }` | `CartResponse` — **stackable**, unlike the single coupon |
+| DELETE | `/api/shop/cart/promotions/{code}?businessId=` | — | `CartResponse` |
+| POST | `/api/shop/cart/merge?guestToken=` | — | `CartResponse` — **Customer only**, call right after login |
+| DELETE | `/api/shop/cart?businessId=` | — | 204 (clears the whole cart) |
+
+**Guest carts (§9.27).** The controller is anonymous now. Two identities exist:
+
+- **Signed-in Customer** — send the JWT. `businessId`/`tenantId` come from the token; the query
+  params are ignored. An authenticated identity always beats any cart token also present, so a
+  stale token can never redirect a logged-in write to someone else's cart.
+- **Guest** — send `X-Cart-Token: <token>` plus `?businessId=`. On the first write, omit the
+  header: the server mints a token and returns it as `guestToken`. **Persist that in
+  localStorage and send it on every subsequent cart and checkout call** — it is the only handle
+  on that cart.
+
+**On login or registration, call `POST /api/shop/cart/merge?guestToken=<token>` before anything
+else.** Quantities are summed rather than replaced, and the guest cart is deleted. Skip this and
+the shopper's pre-login cart is silently orphaned.
 
 ```ts
 type CartResponse = {
   id: string; businessId: string;
-  items: { productId: string; productName: string; unitPrice: number; quantity: number; lineTotal: number }[];
+  items: {
+    productId: string;
+    variantId: string | null;      // §9.22 — the same product in two variants is two lines
+    variantSummary: string | null; // e.g. "Red / Large", ready to render
+    productName: string; unitPrice: number; quantity: number; lineTotal: number;
+  }[];
   couponCode: string | null;
-  subtotal: number; // sum of lineTotal — does NOT subtract the coupon; compute the discounted total client-side if needed, or wait for checkout (§6.4) which returns the real total
+  promotionCodes: string[];
+  subtotal: number;
+  discounts: { source: "Coupon" | "Promotion"; label: string; amount: number; isFreeShipping: boolean }[];
+  discountTotal: number;
+  estimatedTotal: number;          // subtotal − discountTotal. Excludes shipping and tax on purpose.
+  currency: string;
+  itemCount: number;
+  guestToken: string | null;       // present only for guest carts — store it
 };
 ```
 
-One cart per customer per Business, server-persisted — safe to just always `GET` on page load
-rather than trusting local state alone, though caching the last response for snappy UI updates
-between calls is fine.
+> **The old caveat is gone.** The cart response used to return a bare `subtotal` with no way to
+> show the discount, and this document told you to display "coupon applied: CODE10" without an
+> amount. It is now priced by the same engine checkout uses, so `discounts` and `discountTotal`
+> are real numbers you can render directly.
 
-Adding a coupon here only *validates and stores the code* on the cart — the actual discount
-amount is computed at checkout (§6.4), not returned by this endpoint. Don't try to display a
-"discounted subtotal" from the cart response alone; either compute it client-side using the
-same rule the coupon implies (percentage/fixed — not returned by this endpoint either, so
-realistically just show "coupon applied: CODE10" without a computed amount until checkout).
+`estimatedTotal` deliberately excludes shipping and tax: neither can be known before a delivery
+address is. For the full number, call `POST /api/shop/orders/preview` (§6.4) once you have one —
+showing a confident total that then changes at checkout is worse than showing none.
 
-### 6.4 Checkout & orders — Customer only, **not slug-rooted**
+One cart per customer (or per guest token) per Business, server-persisted — safe to always `GET`
+on page load rather than trusting local state, though caching the last response for snappy UI
+updates between calls is fine.
 
-| Method | Path | Body | Returns |
-|---|---|---|---|
-| POST | `/api/shop/orders/checkout` | `CheckoutRequest` | `OrderResponse` |
-| GET | `/api/shop/orders` | — | `OrderResponse[]` (own orders, newest first) |
-| GET | `/api/shop/orders/{orderId}` | — | `OrderResponse` |
-| POST | `/api/shop/orders/{orderId}/cancel` | — | `OrderResponse` |
+### 6.4 Checkout & orders — guests welcome, **not slug-rooted**
+
+| Method | Path | Auth | Body | Returns |
+|---|---|---|---|---|
+| POST | `/api/shop/orders/preview?businessId=` | none | `CheckoutRequest` | `CheckoutPreviewResponse` — **commits nothing** |
+| POST | `/api/shop/orders/checkout?businessId=&tenantId=` | none | `CheckoutRequest` | `OrderResponse` |
+| GET | `/api/shop/orders?page=&pageSize=` | Customer | — | `PagedResult<OrderResponse>` |
+| GET | `/api/shop/orders/lookup?businessId=&orderNumber=&email=` | none | — | `OrderResponse` — guest tracking |
+| GET | `/api/shop/orders/{orderId}` | Customer | — | `OrderResponse` |
+| POST | `/api/shop/orders/{orderId}/cancel` | Customer | — | `OrderResponse` |
+| POST | `/api/shop/orders/returns` | Customer | `CreateReturnRequest` | `ReturnResponse` |
+| GET | `/api/shop/orders/returns?page=&pageSize=` | Customer | — | `PagedResult<ReturnResponse>` |
+| POST | `/api/shop/orders/returns/{returnId}/cancel` | Customer | — | `ReturnResponse` |
+
+**Call `preview` before showing a total.** It runs the identical pricing engine checkout uses —
+promotions, coupon, shipping, tax, gift cards, store credit — and moves no stock, burns no coupon
+usage and creates nothing. This is the only way to show a customer their real total before they
+commit, and it cannot disagree with what they're eventually charged.
+
+**Send an `Idempotency-Key` header on checkout (§9.17).** Any stable per-attempt string (a UUID
+generated when the checkout page mounts). A retry with the same key replays the original response
+and returns `Idempotency-Replayed: true` instead of placing a second order. Reusing the key with
+a *different* body is a `409` — regenerate the key when the cart changes. Omitting the header is
+allowed and keeps the old behaviour, but on a flaky mobile connection that means duplicate orders.
 
 ```ts
 type CheckoutRequest = {
@@ -261,45 +407,146 @@ type CheckoutRequest = {
     label: string; line1: string; line2: string; city: string; state: string;
     postalCode: string; country: string; phone: string; isDefault: boolean;
   };
-  deliveryFee?: number | null; // optional as of 2026-08-15 — see note below
+  deliveryFee?: number | null;      // optional since 2026-08-15 — see note below
+  // --- all optional, added 2026-08-16 ---
+  billingAddress?: typeof shippingAddress | null;  // defaults to the shipping address
+  shippingRateId?: string | null;   // pick one of preview's `shippingOptions`; cheapest wins if omitted
+  fulfillmentMethod?: "Delivery" | "Pickup" | "ExternalCourier" | "Digital";
+  customerNote?: string | null;
+  useStoreCredit?: boolean;         // Customer only; spends up to the available balance
+  giftCardCodes?: string[] | null;
+  // --- guest checkout only (§9.27); ignored when a Customer JWT is present ---
+  guestEmail?: string | null;       // REQUIRED for a guest order
+  guestPhone?: string | null;
+  guestName?: string | null;
 };
+
+type CheckoutPreviewResponse = {
+  subtotal: number;
+  discounts: { source: string; label: string; amount: number; isFreeShipping: boolean }[];
+  discountTotal: number;
+  deliveryFee: number;
+  shippingMethodName: string | null;
+  shippingOptions: {                // §9.20 — render as selectable methods
+    zoneId: string; rateId: string; name: string; price: number;
+    estimatedDaysMin: number | null; estimatedDaysMax: number | null;
+  }[];
+  taxAmount: number;
+  taxLines: { label: string; ratePercent: number; taxableAmount: number; taxAmount: number }[];
+  pricesIncludeTax: boolean;        // TRUE = taxAmount is already inside `total`, don't add it again
+  total: number;
+  giftCardTotal: number;
+  storeCreditAvailable: number;
+  amountDue: number;                // what's left to pay after gift cards and store credit
+  currency: string;
+};
+
+type CreateReturnRequest = {
+  orderId: string;
+  items: { productId: string; variantId: string | null; quantity: number }[];
+  reason: "Damaged" | "WrongItem" | "NotAsDescribed" | "ChangedMind" | "SizeOrFit" | "Other";
+  reasonNote: string;
+  resolution: "Refund" | "Exchange" | "StoreCredit";
+};
+
+type ReturnResponse = {
+  id: string; rmaNumber: string; orderId: string; orderNumber: string; customerUserId: string;
+  items: { productId: string; variantId: string | null; productName: string;
+           quantity: number; unitPrice: number; lineRefund: number }[];
+  reason: CreateReturnRequest["reason"]; reasonNote: string;
+  resolution: CreateReturnRequest["resolution"];
+  status: "Requested" | "Approved" | "Rejected" | "Received" | "Refunded" | "Cancelled";
+  requestedRefundAmount: number; approvedRefundAmount: number | null;
+  currency: string; restocked: boolean; refundedAt: string | null;
+  statusHistory: { status: ReturnResponse["status"]; timestamp: string; note: string }[];
+  createdAt: string;
+};
+```
+
+**Returns (§9.21).** Only `Delivered` orders can be returned, only within the Business's
+`returnWindowDays` (read it from `BusinessResponse`; `0` means returns are off — hide the UI),
+and only up to the quantity not already returned. Refunds are priced from the order's own
+snapshot, so what the customer paid is what they get back. The customer can cancel while the
+request is still `Requested` or `Approved`; after that the goods are in transit and staff own it.
+A **partial** return leaves the order `Delivered` — it still is, for the items kept — and only
+sets `refundedAmount`/`refundedQuantity`. Don't render "Refunded" off a non-zero `refundedAmount`.
 
 type OrderStatusEventResponse = { status: OrderResponse["status"]; timestamp: string; note: string };
 type PaymentStatusEventResponse = { status: OrderResponse["paymentStatus"]; timestamp: string; note: string };
 type OrderResponse = {
-  id: string; businessId: string; orderNumber: string; customerUserId: string;
-  items: { productId: string; productName: string; unitPrice: number; quantity: number; lineTotal: number }[];
-  subtotal: number; couponCode: string | null; discountAmount: number; deliveryFee: number; total: number;
+  id: string; businessId: string; orderNumber: string;
+  customerUserId: string;             // "" for a guest order
+  isGuestOrder: boolean;
+  contactEmail: string; contactPhone: string;
+  items: {
+    productId: string; variantId: string | null; variantSummary: string | null;
+    productName: string; unitPrice: number; quantity: number;
+    refundedQuantity: number;         // §9.21 — how many of this line have come back
+    lineTotal: number;
+  }[];
+  subtotal: number; couponCode: string | null; discountAmount: number;
+  discounts: { source: string; label: string; amount: number }[];   // itemised, for the receipt
+  deliveryFee: number;
+  taxAmount: number; taxRatePercent: number;
+  pricesIncludeTax: boolean;          // TRUE = taxAmount is inside `total`, not added to it
+  total: number;
+  giftCardTotal: number;
+  giftCardsUsed: { codeSuffix: string; amountApplied: number }[];
+  storeCreditApplied: number;
+  amountDue: number;
+  refundedAmount: number;
+  currency: string;                   // snapshotted at checkout (§9.38) — display with this, not the Business's current currency
   status: "PendingPayment" | "Processing" | "Confirmed" | "OutForDelivery" | "Delivered" | "Cancelled" | "Refunded";
   paymentStatus: "Pending" | "Paid" | "Failed" | "Refunded";
+  fulfillmentMethod: "Delivery" | "Pickup" | "ExternalCourier" | "Digital";
   shippingAddress: CheckoutRequest["shippingAddress"] | null;
+  billingAddress: CheckoutRequest["shippingAddress"] | null;
   deliveryAgentUserId: string | null;
+  shippingMethodName: string | null;
+  carrierName: string | null; trackingNumber: string | null; trackingUrl: string | null;  // §9.20
+  invoiceNumber: string | null;       // null until BackOffice issues one
+  customerNote: string;
   statusHistory: OrderStatusEventResponse[];          // added 2026-08-15, main blueprint §9.7
   paymentStatusHistory: PaymentStatusEventResponse[];  // added 2026-08-15, main blueprint §9.6
   placedAt: string;
 };
 ```
 
-**Checkout reads whatever's currently in the customer's server-side cart** — there's no
+**Checkout reads whatever's currently in the shopper's server-side cart** — there's no
 "items" field in `CheckoutRequest`; add everything to the cart first (§6.3), then checkout.
-On success, the cart is cleared server-side automatically. Stock is decremented per item at
-checkout time (for `trackInventory` products); if any item's stock is insufficient, the whole
-checkout fails with a `409` naming the specific product (§5) — surface that message directly.
+On success, the cart is cleared server-side automatically.
 
-**`deliveryFee` is now optional (changed 2026-08-15, main blueprint §9.7)** — omit it (or send
-`null`) to fall back to the Business's own `defaultDeliveryFee` (§6.2's `BusinessResponse`), set
-by BackOffice staff. There is still no delivery-zone or distance-based calculation — it's one
-flat number per Business, not computed per order. If Antivaly wants a different fee for
-different addresses/order sizes, that's still a client-side (or future backend) decision to
-make and pass explicitly; the flat default is just a sane fallback for the common case, not a
-replacement for real fee logic if one is needed.
+**Stock handling changed in 2026-08-16 (§9.17), and the change is in your favour.** Every line is
+validated before any stock moves, each deduction is atomic and refuses to go below zero, and if a
+later line fails, every deduction already made is put back. So a `409` naming a specific product
+now genuinely means *nothing happened* — you can surface the message and let the shopper retry
+without worrying that half their basket was silently reserved. Surface the message directly; it
+names the product and the quantity actually available.
+
+**Shipping is zone-aware now (changed 2026-08-16, main blueprint §9.20).** The old advice — one
+flat fee per Business, compute anything smarter client-side — no longer applies. Precedence, most
+to least specific: an explicit `deliveryFee` you pass, the `shippingRateId` the customer picked,
+the cheapest matching zone rate, then the Business's flat `defaultDeliveryFee` as the fallback.
+
+Call `preview` with the address to get `shippingOptions` (name, price, estimated days) and render
+them as selectable methods. Never auto-upgrade the customer: with no `shippingRateId` the server
+picks the *cheapest* match, deliberately. Free-shipping-over-X is expressed as a zero-priced band
+in the merchant's rate table, so it just shows up as a £0 option — you don't special-case it.
+
+**Tax (§9.19).** `taxAmount` on the order is snapshotted, as is `pricesIncludeTax`. When that flag
+is `true`, the tax is already inside `total` — show it as "incl. {tax.displayName}" and **do not
+add it again**, or you will display a total higher than the customer is charged. Label it with
+`business.tax.displayName` ("VAT"/"GST"/"Sales Tax"), not a hardcoded word. Tax is computed on the
+*discounted* base, so it moves when a promotion applies — another reason to render `preview`'s
+numbers rather than computing your own.
 
 **`deliveryModuleEnabled` on the storefront response (added 2026-08-15, main blueprint §9.14)**
-tells you whether this Business runs a delivery workflow at all — some sellers are pickup-only
-or use a third-party courier. It doesn't change the checkout API's shape (`deliveryFee` still
-accepts any caller-supplied number regardless), but it's a signal worth reading: when `false`,
-consider hiding delivery-related copy/estimates and defaulting `deliveryFee` to `0` or a
-pickup-appropriate value rather than showing a delivery ETA that will never happen.
+tells you whether this Business runs an in-house delivery-agent workflow at all. As of 2026-08-16
+there is a cleaner way to say what you mean: send `fulfillmentMethod: "Pickup"` or
+`"ExternalCourier"` on the checkout request. A `false` `deliveryModuleEnabled` is still the signal
+to hide delivery ETAs, but the order can now record *how* it is actually being fulfilled, and an
+externally shipped order carries `carrierName`/`trackingNumber`/`trackingUrl` once staff fill
+them in — render those on the order detail page as a tracking link.
 
 **No payment gateway exists.** Checkout immediately creates the order with
 `paymentStatus: "Pending"` and `status: "Processing"` — effectively a cash-on-delivery flow
@@ -318,7 +565,62 @@ tracking view directly from that array instead of just showing the current `stat
 
 **Cancellation** only works while `status` is `PendingPayment`, `Processing`, or `Confirmed` —
 past that (`OutForDelivery` or later) the API returns `409` and the order can't be
-self-cancelled by the customer. Restocks items automatically on success.
+self-cancelled by the customer. Restocks items automatically on success, and since 2026-08-16
+also returns any gift-card value and store credit that was spent on it. After delivery the route
+is a **return** (§9.21), not a cancellation.
+
+### 6.5 New in 2026-08-16 — account surface
+
+`/api/shop/account/*`, Customer only, scope entirely from the JWT.
+
+| Method | Path | Returns |
+|---|---|---|
+| GET | `/api/shop/account/wishlist?page=&pageSize=` | `PagedResult<WishlistItemResponse>` |
+| POST | `/api/shop/account/wishlist/{productId}` | `WishlistItemResponse` — idempotent, re-saving is a no-op |
+| DELETE | `/api/shop/account/wishlist/{productId}` | 204 |
+| POST | `/api/shop/account/reviews` | `ReviewResponse` — `{ productId, rating, title, body }` |
+| GET | `/api/shop/account/store-credit` | `StoreCreditBalanceResponse` |
+| GET | `/api/shop/account/gift-cards/{code}` | `GiftCardBalanceResponse` |
+| GET | `/api/shop/account/data-export` | `CustomerDataExport` — offer as a JSON download |
+| PUT | `/api/shop/account/notification-preferences` | 204 |
+| DELETE | `/api/shop/account` | 204 — **irreversible**, confirm hard |
+
+```ts
+type WishlistItemResponse = {
+  id: string; productId: string; productName: string; slug: string;
+  price: number; effectivePrice: number; imageUrl: string | null;
+  inStock: boolean; addedAt: string;
+};
+type StoreCreditBalanceResponse = {
+  balance: number; currency: string;
+  recentEntries: { id: string; amount: number; currency: string;
+                   reason: "GiftCardRedemption" | "RefundToCredit" | "LoyaltyReward" | "ManualAdjustment" | "Spent";
+                   note: string; referenceOrderId: string | null; createdAt: string }[];
+};
+type GiftCardBalanceResponse = {
+  codeSuffix: string; remainingBalance: number; currency: string;
+  expiresAt: string | null; isRedeemable: boolean;
+};
+type UpdateNotificationPreferencesRequest = {
+  marketingEmail: boolean;      // opt-IN. Defaults false; only send marketing when true.
+  backInStockAlerts: boolean;
+  reviewRequests: boolean;
+  marketingSms: boolean;
+};
+```
+
+**Reviews are moderated by default (§9.25).** A submitted review comes back `Pending` unless the
+merchant enabled `autoPublishReviews` — tell the customer it's awaiting approval rather than
+letting them refresh and wonder why it vanished. One review per customer per product; a second
+attempt is a `409`. `isVerifiedPurchase` is established server-side against real delivered
+orders and is worth badging.
+
+**Wishlist doubles as the back-in-stock signal (§9.36).** Saving an out-of-stock product is how a
+customer subscribes to its restock email — say so on the button when `isAvailable` is false.
+
+**Account deletion anonymises rather than erases (§9.37).** Orders survive, stripped of personal
+data, because the merchant has its own legal duty to retain them. Say that in the confirmation
+dialog; "we'll delete everything" would be untrue.
 
 ---
 
@@ -326,21 +628,33 @@ self-cancelled by the customer. Restocks items automatically on success.
 
 1. **Home / Landing** — `GET /api/shop/{slug}` for hero/branding + a products/categories
    pull for featured sections. Good SSG/ISR candidate.
-2. **Category / product listing** — `GET /api/shop/{slug}/products?categoryId=&search=`,
-   with category filter chips from `GET /api/shop/{slug}/categories`. SSG/ISR candidate,
-   revalidate short-interval.
+2. **Category / product listing** — `GET /api/shop/{slug}/products` with the §6.2 catalog query,
+   a facet sidebar from `/products/facets`, a sort dropdown, and pagination off the envelope.
+   SSG/ISR candidate, revalidate short-interval.
 3. **Product detail** — `GET /api/shop/{slug}/products/{productId}`. SSG/ISR candidate (or
    SSR if wanting always-fresh stock counts — `stockQuantity` can go stale under ISR).
 4. **Register / Login** — `POST /api/shop/{slug}/auth/register` / `.../login`.
 5. **Forgot / reset password** (added 2026-08-15, §4) — worth building even though real email
    delivery doesn't exist yet, so it's ready once a provider is chosen backend-side.
 6. **Cart** — full CRUD per §6.3, client-rendered (needs auth).
-7. **Checkout** — address form → `POST /api/shop/orders/checkout`. Show the `409` stock
-   message inline against the offending item if checkout fails.
+7. **Checkout** — address form → `POST /api/shop/orders/preview` on every address or method
+   change → `POST /api/shop/orders/checkout` with an `Idempotency-Key`. Show the `409` stock
+   message inline against the offending item if checkout fails. Works for guests; prompt for an
+   email rather than forcing registration when `guestCheckoutEnabled` is true.
 8. **Order history** — `GET /api/shop/orders` list, `GET .../{orderId}` detail with a real
    status timeline built from `statusHistory` (§6.4), cancel action gated by `status` per
-   §6.4's note.
-9. **Account / profile** — `GET`/`PUT /api/auth/me`.
+   §6.4's note, a tracking link when `trackingUrl` is set, and a "return items" action for
+   `Delivered` orders inside the return window.
+9. **Account / profile** — `GET`/`PUT /api/auth/me`, plus the §6.5 surface.
+10. **Guest order tracking** — a public page taking order number + email against
+   `GET /api/shop/orders/lookup`. Link it from the confirmation email; a guest has no account
+   to log into.
+11. **Wishlist** (§6.5) and **Returns** (§6.4) — both need their own pages.
+12. **Static pages** — render `GET /api/shop/{slug}/pages/{pageSlug}` as Markdown. Terms and
+   Privacy are legally required in most markets and are merchant-authored, not yours to write.
+13. **Email verification landing** — `POST /api/auth/verify-email` with the token from the link.
+   Build it even though `Auth:RequireEmailVerification` currently defaults off, so the shop is
+   ready the day a real email provider is wired in.
 
 ---
 
@@ -349,9 +663,19 @@ self-cancelled by the customer. Restocks items automatically on success.
 - `EffectivePrice` (not `Price`) is what a customer should ever see as "the price" —
   `Price`/`CompareAtPrice` exist for showing a strikethrough original price alongside a
   discount, not as the number to charge.
-- No product reviews/ratings exist in the API — don't design a rating widget around data that
-  doesn't exist yet.
-- No wishlist/favorites endpoint exists.
-- Guest checkout does not exist — an account is required before anything in §6.3/§6.4 works
-  (all Customer-role-gated). Design the cart page to prompt login/register rather than
-  supporting an anonymous cart, since the backend has nowhere to persist one.
+- **Three notes that used to live here are now obsolete** (all resolved 2026-08-16): reviews and
+  ratings exist (§6.2, §6.5), a wishlist exists (§6.5), and guest checkout exists (§6.3, §6.4).
+  If you find advice elsewhere in this document that contradicts those, this section wins.
+- **Every list endpoint returns a paged envelope, not an array** (§9.18). Read `.items`. This is
+  the single most likely thing to break a client written against the older contract.
+- **Never compute a total yourself.** `POST /api/shop/orders/preview` runs the exact pricing
+  engine checkout uses — promotions, coupon, group pricing, shipping, tax, gift cards, credit.
+  Any number you derive independently will eventually disagree with what the customer is charged.
+- **Read `currency` off the order, not off the Business.** It is snapshotted at checkout (§9.38),
+  so a merchant changing currency later doesn't retroactively relabel old orders.
+- **`costPrice` and `unitMargin` are always `null` on public endpoints.** If you ever see numbers
+  there, you're calling a BackOffice route by mistake — that's the merchant's supplier pricing.
+- **Still no payment gateway** (§9.6). Checkout is cash-on-delivery-shaped; `amountDue` tells you
+  what's left after gift cards and store credit, but nothing collects it online.
+- **Still no real email delivery** (§9.10). Verification tokens, password resets and order
+  confirmations are written to the server log. Build the flows; they work, they just don't send.

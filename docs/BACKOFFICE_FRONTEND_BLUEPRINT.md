@@ -189,6 +189,30 @@ All endpoints below require `Authorization: Bearer <token>` and the caller must 
 that `businessId` (own-Business for `BusinessAdmin`/`BusinessStaff`/`DeliveryAgent`, any
 Business under their Tenant for `TenantOwner`, any Business at all for `PlatformSuperAdmin`).
 
+> ### ⚠ Breaking change — 2026-08-16 (main blueprint §9.18)
+>
+> **Every list endpoint in this document now returns a paged envelope, not a bare array.**
+>
+> ```ts
+> type PagedResult<T> = {
+>   items: T[];
+>   page: number; pageSize: number; totalCount: number; totalPages: number;
+>   hasNextPage: boolean; hasPreviousPage: boolean;
+> };
+> ```
+>
+> All of them accept `?page=&pageSize=` (default 25, max 200). Read `.items`. Build a shared
+> fetch wrapper that unwraps the envelope and feeds a pager — before this the API returned every
+> order a business had ever taken in a single response, and the tables in this app were sorting
+> and slicing that client-side.
+>
+> Server-side filtering came with it, so stop filtering in the browser: orders take
+> `status`, `paymentStatus`, `search`, `from`, `to`; products take `search`.
+
+**§9B added 55 endpoints across nine new BackOffice areas** — returns, reviews, promotions,
+customer groups, gift cards, store credit, shipping zones, storefront content, an audit log, a
+real dashboard and CSV import/export. They are documented in §7.11–§7.16 below.
+
 ### 7.1 Auth (see also §5)
 
 | Method | Path | Body | Returns |
@@ -245,15 +269,53 @@ type BusinessResponse = {
   currency: string; contactEmail: string; contactPhone: string;
   status: "Draft" | "Active" | "Suspended";
   deliveryModuleEnabled: boolean;  // added 2026-08-15
-  defaultDeliveryFee: number;      // added 2026-08-15, §9.7 — flat fee Shop checkout falls back to when omitted
+  defaultDeliveryFee: number;      // added 2026-08-15, §9.7 — now the FALLBACK when no §7.13 shipping zone matches
   createdAt: string;
+  // --- added 2026-08-16 (§9B) ---
+  tax: TaxSettings;
+  returnWindowDays: number;
+  reviewsEnabled: boolean;
+  guestCheckoutEnabled: boolean;
 };
+
+type TaxSettings = {
+  enabled: boolean;
+  defaultRatePercent: number;      // e.g. 15 for 15%
+  pricesIncludeTax: boolean;       // TRUE = catalog prices already contain tax (the VAT convention)
+  taxShipping: boolean;
+  classRates: Record<string, number>;  // Product.taxClass -> rate; unlisted classes use the default
+  registrationNumber: string;      // VAT/GST/BIN, printed on invoices
+  displayName: string;             // "VAT" | "GST" | "Sales Tax"
+};
+type InvoiceSettings = {
+  numberPrefix: string;            // e.g. "INV-"
+  lastNumber: number;              // READ-ONLY in practice — see note
+  legalName: string; legalAddress: string; registrationNumber: string; footerNote: string;
+};
+
+// Every §9B field is OPTIONAL. Omitting a section leaves it as it was — this is a patch, not a
+// replace — so the pre-2026-08-16 request body still works and a partial save can't wipe tax config.
 type UpdateBusinessRequest = {
   name: string; description: string; logoUrl: string; bannerUrl: string;
   themeColor: string; contactEmail: string; contactPhone: string; currency: string;
   defaultDeliveryFee: number;  // added 2026-08-15, §9.7
+  tax?: TaxSettings | null;
+  invoicing?: InvoiceSettings | null;
+  returnWindowDays?: number | null;      // 0 disables returns entirely
+  reviewsEnabled?: boolean | null;
+  autoPublishReviews?: boolean | null;   // write-only; not echoed on BusinessResponse
+  guestCheckoutEnabled?: boolean | null;
 };
 ```
+
+**`invoicing.lastNumber` is ignored on write.** It's the sequential invoice counter (§9.33) and
+the server preserves its own value whatever you send — rewinding it would issue duplicate
+invoice numbers on a legally sequential document. Show it read-only, if at all.
+
+**`pricesIncludeTax` is the field most worth getting right.** True means catalog prices already
+contain tax and it is *extracted* at checkout; false means it's added on top. Getting it
+backwards silently overcharges (or undercharges) every customer, so label the toggle in plain
+language — "My prices already include tax" — rather than with the field name.
 
 ### 7.3 Categories — `/api/businesses/{businessId}/categories`
 
@@ -321,13 +383,31 @@ type ProductResponse = {
   reorderThreshold: number | null; reorderQuantity: number | null;  // added 2026-08-15, §9.15b
   images: string[]; tags: string[];
   status: "Draft" | "Active" | "OutOfStock" | "Archived";
-  variants: ProductVariantResponse[];  // added 2026-08-15, §9.5 — catalog-only, see note below
+  variants: ProductVariantResponse[];  // added 2026-08-15 (§9.5); BUYABLE since 2026-08-16 (§9.22)
+  // --- added 2026-08-16 (§9.25, §9.28, §9.31) ---
+  costPrice: number | null;   // populated on BackOffice reads, always null on public Shop reads
+  unitMargin: number | null;  // effectivePrice − costPrice; null when no cost is recorded
+  averageRating: number; reviewCount: number;
+  brand: string; barcode: string;
+  weightKg: number | null;
+  metaTitle: string; metaDescription: string;
+  publishedAt: string | null; unpublishedAt: string | null;
+  isFeatured: boolean; sortWeight: number; taxClass: string;
+  isAvailable: boolean;
 };
+// Every §9B field below is optional and defaults to empty/null, so the older request body works.
 type CreateProductRequest = {
   categoryId: string; name: string; slug?: string | null; sku: string; description: string;
   price: number; compareAtPrice?: number | null; stockQuantity: number; trackInventory: boolean;
   images?: string[] | null; tags?: string[] | null;
   variants?: ProductVariantRequest[] | null;
+  costPrice?: number | null;   // §9.31 — prompt for this; COGS, margin and the balance sheet need it
+  brand?: string; barcode?: string;
+  weightKg?: number | null; lengthCm?: number | null; widthCm?: number | null; heightCm?: number | null;
+  metaTitle?: string; metaDescription?: string;
+  publishedAt?: string | null; unpublishedAt?: string | null;  // scheduled go-live / retirement
+  isFeatured?: boolean; sortWeight?: number;                   // drive the storefront's Relevance sort
+  taxClass?: string;                                           // resolved against Business.tax.classRates
 };
 type UpdateProductRequest = {
   categoryId: string; name: string; description: string; price: number;
@@ -466,12 +546,26 @@ BackOffice-facing "payout history" endpoint). Safe to build simple "current bala
 
 | Method | Path | Roles | Body | Returns |
 |---|---|---|---|---|
-| GET | `` | Admin, Staff, TenantOwner, Platform (**not** DeliveryAgent) | — | `OrderResponse[]` |
-| GET | `/assigned-to-me` | any BackOffice role | — | `OrderResponse[]` (DeliveryAgent's own queue; empty for other roles) |
+| GET | `?...OrderQuery` | Admin, Staff, TenantOwner, Platform (**not** DeliveryAgent) | — | **`PagedResult<OrderResponse>`** |
+| GET | `/assigned-to-me?page=&pageSize=` | any BackOffice role | — | `PagedResult<OrderResponse>` (DeliveryAgent's own queue; empty for other roles) |
 | GET | `/{orderId}` | Admin, Staff, TenantOwner, Platform, DeliveryAgent | — | `OrderResponse` |
 | PATCH | `/{orderId}/status` | Admin, Staff, TenantOwner, Platform, DeliveryAgent | `{ status, note }` | `OrderResponse` |
 | PATCH | `/{orderId}/payment-status` | Admin, Staff, TenantOwner, Platform | `{ status, note? }` | `OrderResponse` (added 2026-08-15, §9.6) |
 | PATCH | `/{orderId}/assign-delivery` | Admin, Staff, TenantOwner, Platform (**not** DeliveryAgent) | `{ deliveryAgentUserId }` | `OrderResponse` |
+| PATCH | `/{orderId}/shipment` | Admin, Staff, TenantOwner, Platform | `UpdateShipmentRequest` | `OrderResponse` (added 2026-08-16, §9.20) |
+| PATCH | `/{orderId}/internal-note` | Admin, Staff, TenantOwner, Platform | `UpdateOrderNoteRequest` | `OrderResponse` (added 2026-08-16) |
+| GET | `/{orderId}/invoice` | Admin, Staff, TenantOwner, Platform | — | `InvoiceResponse` (added 2026-08-16, §9.33) |
+
+**Recording a tracking number ships the order.** `PATCH .../shipment` also moves a `Processing`
+or `Confirmed` order to `OutForDelivery` and emails the customer — so it is the external-courier
+counterpart to `assign-delivery`, not just a metadata edit. Don't make staff perform a separate
+status change afterwards; they'll forget.
+
+**`GET .../invoice` assigns the invoice number on first call** and returns the same one forever
+after. The number is gapless and sequential per Business, so calling it is not free — trigger it
+from an explicit "Issue invoice" action rather than on page load, or every browsed order gets a
+number. The response carries seller legal identity, tax registration, both addresses, itemised
+lines, discounts, tax and amount paid/due; rendering the PDF is this app's job.
 
 **`assign-delivery` 409s the same way if `business.deliveryModuleEnabled` is `false`** — hide
 the "assign delivery agent" action on the order detail screen when the flag is off (§7.2).
@@ -479,21 +573,54 @@ the "assign delivery agent" action on the order detail screen when the flag is o
 ```ts
 type OrderStatusEventResponse = { status: OrderResponse["status"]; timestamp: string; note: string };
 type PaymentStatusEventResponse = { status: OrderResponse["paymentStatus"]; timestamp: string; note: string };
+type Address = {
+  label: string; line1: string; line2: string; city: string; state: string;
+  postalCode: string; country: string; phone: string; isDefault: boolean;
+};
 type OrderResponse = {
-  id: string; businessId: string; orderNumber: string; customerUserId: string;
-  items: { productId: string; productName: string; unitPrice: number; quantity: number; lineTotal: number }[];
-  subtotal: number; couponCode: string | null; discountAmount: number; deliveryFee: number; total: number;
+  id: string; businessId: string; orderNumber: string;
+  customerUserId: string;            // "" for a guest order (§9.27)
+  isGuestOrder: boolean;
+  contactEmail: string; contactPhone: string;
+  items: {
+    productId: string; variantId: string | null; variantSummary: string | null;
+    productName: string; unitPrice: number; quantity: number;
+    refundedQuantity: number;        // §9.21
+    lineTotal: number;
+  }[];
+  subtotal: number; couponCode: string | null; discountAmount: number;
+  discounts: { source: string; label: string; amount: number }[];
+  deliveryFee: number;
+  taxAmount: number; taxRatePercent: number; pricesIncludeTax: boolean;   // §9.19, snapshotted
+  total: number;
+  giftCardTotal: number;
+  giftCardsUsed: { codeSuffix: string; amountApplied: number }[];
+  storeCreditApplied: number; amountDue: number; refundedAmount: number;
+  currency: string;                  // §9.38 — snapshotted at checkout; display with THIS
   status: "PendingPayment" | "Processing" | "Confirmed" | "OutForDelivery" | "Delivered" | "Cancelled" | "Refunded";
   paymentStatus: "Pending" | "Paid" | "Failed" | "Refunded";
-  shippingAddress: {
-    label: string; line1: string; line2: string; city: string; state: string;
-    postalCode: string; country: string; phone: string; isDefault: boolean;
-  } | null;
+  fulfillmentMethod: "Delivery" | "Pickup" | "ExternalCourier" | "Digital";
+  shippingAddress: Address | null;
+  billingAddress: Address | null;
   deliveryAgentUserId: string | null;
+  shippingMethodName: string | null;
+  carrierName: string | null; trackingNumber: string | null; trackingUrl: string | null;  // §9.20
+  invoiceNumber: string | null; customerNote: string;
   statusHistory: OrderStatusEventResponse[];         // added 2026-08-15, §9.6/§9.7
   paymentStatusHistory: PaymentStatusEventResponse[]; // added 2026-08-15, §9.6
   placedAt: string;
 };
+
+// --- added 2026-08-16 ---
+type OrderQuery = {
+  status?: string; paymentStatus?: string; search?: string;   // search matches orderNumber / contactEmail
+  from?: string; to?: string; page?: number; pageSize?: number;
+};
+type UpdateShipmentRequest = {
+  carrierName: string | null; trackingNumber: string | null;
+  trackingUrl: string | null; shippingMethodName: string | null;
+};
+type UpdateOrderNoteRequest = { internalNote: string };  // staff-only, never shown to the customer
 type UpdateOrderStatusRequest = { status: OrderResponse["status"]; note: string };
 type UpdatePaymentStatusRequest = { status: OrderResponse["paymentStatus"]; note?: string | null };
 type AssignDeliveryAgentRequest = { deliveryAgentUserId: string };
@@ -550,8 +677,17 @@ type LowStockProductResponse = {
   productId: string; productName: string; sku: string;
   stockQuantity: number; reorderThreshold: number; reorderQuantity: number | null;
 };
-type CategoryValuationEntry = { categoryId: string; value: number };
-type InventoryValuationResponse = { totalValue: number; byCategory: CategoryValuationEntry[] };
+// CHANGED 2026-08-16 (§9.31) — `totalValue` is gone; it valued stock at RETAIL price and fed
+// that to the balance sheet as an asset, overstating assets by the whole unrealised margin.
+type CategoryValuationEntry = { categoryId: string; valueAtCost: number; valueAtRetail: number };
+type InventoryValuationResponse = {
+  totalValueAtCost: number;      // the accounting figure — what the balance sheet uses
+  totalValueAtRetail: number;    // what it would sell for; merchandising info, NOT an asset value
+  potentialMargin: number;
+  unvaluedProductCount: number;  // products in stock with no costPrice recorded — surface this,
+                                 // it's the honest measure of how much the cost figure understates
+  byCategory: CategoryValuationEntry[];
+};
 ```
 
 **Every `StockQuantity` change is now logged.** Checkout, order cancellation, and this manual
@@ -583,23 +719,240 @@ type ExpenseResponse = {
 };
 type CreateExpenseRequest = { category: string; amount: number; note: string; incurredAt: string };
 type UpdateExpenseRequest = { category: string; amount: number; note: string; incurredAt: string };
+// CHANGED 2026-08-16 (§9.31) — two profit lines now, and NetProfit finally subtracts COGS.
 type ProfitAndLossResponse = {
   from: string; to: string;
-  revenue: number; refunds: number; expenses: number; deliveryPayouts: number; netProfit: number;
+  revenue: number;              // NET OF TAX — tax collected is a liability, reported separately
+  refunds: number;
+  costOfGoodsSold: number;
+  grossProfit: number;          // revenue − refunds − COGS. The number most retailers manage on.
+  grossMarginPercent: number;
+  expenses: number;
+  deliveryPayouts: number;
+  netProfit: number;            // grossProfit − expenses − deliveryPayouts
+  taxCollected: number;
+  uncostedOrderCount: number;   // delivered orders in-window with no recorded cost — see note
 };
-type BalanceSheetResponse = { cashPosition: number; inventoryValue: number; totalAssets: number };
+type BalanceSheetResponse = {
+  cashPosition: number;
+  inventoryValueAtCost: number;   // replaces the old `inventoryValue`, which used retail price
+  inventoryValueAtRetail: number;
+  totalAssets: number;
+  taxPayable: number;             // collected, owed onward — not the business's money
+  giftCardLiability: number;      // outstanding gift-card float
+  totalLiabilities: number;
+  netPosition: number;            // totalAssets − totalLiabilities
+};
 ```
 
 `from`/`to` on the P&L endpoint are required query params, ISO 8601 (e.g.
 `?from=2026-01-01T00:00:00Z&to=2026-12-31T23:59:59Z`) — there's no default window, the caller
-always picks one. `netProfit = revenue − refunds − expenses − deliveryPayouts`.
+always picks one.
 
-**This is single-entry, cash-basis bookkeeping, not a GAAP-compliant system** — `revenue` is
-recognized only when an order reaches `Delivered` (same rule the SuperOffice analytics
-endpoint uses, so the two never quietly disagree), and the balance sheet has no liabilities
-line, just `cashPosition + inventoryValue = totalAssets`. Frame any P&L/balance-sheet screen as
-an operational dashboard for the business owner, not as something to hand to an actual
-accountant as a system of record.
+**What changed on 2026-08-16, and why it matters to what you render (§9.31).** The old
+`netProfit` never subtracted what the goods cost, so it was inflated by the entire cost of
+everything sold. It does now, and there is a `grossProfit`/`grossMarginPercent` pair alongside
+it — margin is the number most retailers actually manage on day to day, so give it prominence
+at least equal to net profit.
+
+**Surface `uncostedOrderCount` when it's non-zero.** It counts delivered orders in the window
+that contributed no cost, meaning gross profit is optimistic by an unknown amount. A quiet
+inline warning — "N orders have no recorded cost price; margin is overstated" — linking to the
+products missing a `costPrice` is far better than a confident wrong number. Same for
+`unvaluedProductCount` on the valuation screen.
+
+**Prompt for `costPrice` in the product form.** Without it, COGS, gross margin and the balance
+sheet's asset figure are all incomplete. It is the single highest-value field in §7.4.
+
+**Still single-entry, cash-basis bookkeeping, not a GAAP-compliant system** — `revenue` is
+recognized only when an order reaches `Delivered` (the same rule §7.16's dashboard and the
+SuperOffice analytics endpoint use, so the three never quietly disagree). The balance sheet now
+*has* a liabilities side (tax payable, gift-card float) but it is still partial: no supplier
+payables, no accruals. Frame these screens as an operational dashboard for the business owner,
+not as something to hand to an accountant as a system of record.
+
+### 7.11 Returns / RMAs (added 2026-08-16, main blueprint §9.21)
+
+| Method | Path | Body | Returns | Who |
+|---|---|---|---|---|
+| GET | `.../returns?status=&page=&pageSize=` | — | `PagedResult<ReturnResponse>` | Staff+ |
+| GET | `.../returns/{returnId}` | — | `ReturnResponse` | Staff+ |
+| POST | `.../returns/{returnId}/decision` | `DecideReturnRequest` | `ReturnResponse` | Staff+ |
+| POST | `.../returns/{returnId}/received` | — | `ReturnResponse` | Staff+ |
+| POST | `.../returns/{returnId}/refund` | — | `ReturnResponse` | **Admin-tier** |
+
+```ts
+type DecideReturnRequest = {
+  approve: boolean;
+  approvedRefundAmount: number | null;  // null = the full requested amount; can be LESS, never more
+  note: string;
+};
+// ReturnResponse is the same shape the Shop blueprint documents.
+```
+
+**The lifecycle is `Requested → Approved → Received → Refunded`, and each step does something
+different.** Build the UI as three distinct actions, not one "process return" button:
+
+- **Decision** — approve or reject. Approving with a lower `approvedRefundAmount` is how a
+  restocking fee is applied. More than requested is a `409`.
+- **Received** — the goods are physically back. **This is what restocks**, not approval and not
+  the refund. Damaged returns don't restock at all (a `DamageWriteOff` note is written instead).
+- **Refund** — Admin-tier, writes the ledger entry and settles the money. Refusing until
+  `Received` is deliberate; don't try to shortcut it.
+
+A **partial** return leaves the order `Delivered` and only moves `refundedAmount` /
+`refundedQuantity`. Show a "partially refunded" badge off those fields rather than reading the
+order status.
+
+### 7.12 Reviews (added 2026-08-16, main blueprint §9.25)
+
+| Method | Path | Body | Returns | Who |
+|---|---|---|---|---|
+| GET | `.../reviews?status=&page=&pageSize=` | — | `PagedResult<ReviewResponse>` | Staff+ |
+| PATCH | `.../reviews/{reviewId}/status` | `{ status: "Pending" \| "Published" \| "Rejected" }` | `ReviewResponse` | Staff+ |
+| POST | `.../reviews/{reviewId}/reply` | `{ reply: string }` | `ReviewResponse` | Staff+ |
+| DELETE | `.../reviews/{reviewId}` | — | 204 | **Admin-tier** |
+
+Reviews land `Pending` unless the Business sets `autoPublishReviews` (§7.2) — a moderation queue
+filtered to `status=Pending` is the primary screen, with the count worth badging in the nav.
+`isVerifiedPurchase` is server-established against real delivered orders; show it in the queue,
+it's the strongest signal a review is genuine. Moderating in either direction recomputes the
+product's `averageRating`, so unpublishing genuinely lowers it.
+
+### 7.13 Merchandising — Admin-tier only (added 2026-08-16, §9.20, §9.23, §9.24, §9.30)
+
+All under `/api/businesses/{businessId}`. Full CRUD on each unless noted.
+
+| Area | Paths |
+|---|---|
+| Promotions (§9.23) | `GET/POST .../promotions`, `PUT/DELETE .../promotions/{id}` |
+| Customer groups (§9.23) | `GET/POST .../customer-groups`, `PUT/DELETE .../customer-groups/{id}`, `POST/DELETE .../customer-groups/{id}/members` |
+| Gift cards (§9.24) | `GET/POST .../gift-cards`, `DELETE .../gift-cards/{id}` (deactivate) |
+| Store credit (§9.24) | `GET/POST .../customers/{customerUserId}/store-credit` |
+| Shipping zones (§9.20) | `GET/POST .../shipping-zones`, `PUT/DELETE .../shipping-zones/{id}` |
+| Storefront content (§9.30) | `GET/POST .../content?type=`, `PUT/DELETE .../content/{id}` |
+
+```ts
+type CreatePromotionRequest = {
+  name: string;
+  code: string | null;              // null = AUTOMATIC, applies with no code typed
+  effect: "PercentageOff" | "FixedAmountOff" | "FreeShipping" | "BuyXGetY";
+  scope: "Order" | "Products" | "Categories";
+  value: number;                    // percent, or currency amount; ignored for FreeShipping/BuyXGetY
+  productIds: string[]; categoryIds: string[];
+  buyQuantity: number; getQuantity: number;   // BuyXGetY only
+  minOrderAmount: number | null;
+  customerGroupIds: string[];       // empty = everyone
+  firstOrderOnly: boolean;
+  maxUses: number | null;           // global cap
+  maxUsesPerCustomer: number | null;// the per-customer cap Coupon never had
+  priority: number;                 // lower runs first
+  stackable: boolean;               // false = this one wins and suppresses everything lower-priority
+  startsAt: string; endsAt: string | null; isActive: boolean;
+};
+type CustomerGroupRequest = { name: string; description: string; discountPercent: number | null; isActive: boolean };
+type IssueGiftCardRequest = { amount: number; issuedToEmail: string | null; expiresAt: string | null };
+type GrantStoreCreditRequest = { amount: number; note: string };   // negative amounts deduct
+type CreateShippingZoneRequest = {
+  name: string;
+  countries: string[];              // EMPTY = the catch-all fallback zone
+  regions: string[];                // narrows within those countries
+  rates: {
+    name: string; price: number;
+    minOrderSubtotal: number | null; maxOrderSubtotal: number | null;   // free-shipping-over-X lives here
+    minWeightKg: number | null; maxWeightKg: number | null;
+    estimatedDaysMin: number | null; estimatedDaysMax: number | null;
+    isActive: boolean;
+  }[];
+  priority: number;                 // lower wins among equally specific zones
+  isActive: boolean;
+};
+type ContentBlockRequest = {
+  type: "Banner" | "Page" | "MenuItem" | "Article";
+  slug: string; title: string; subtitle: string; body: string;  // Markdown
+  imageUrl: string; linkUrl: string; linkLabel: string;
+  parentId: string | null;          // MenuItem only, one level of nesting
+  sortOrder: number; isPublished: boolean;
+  startsAt: string | null; endsAt: string | null;   // scheduled visibility
+  metaTitle: string; metaDescription: string;
+};
+```
+
+Notes worth building around:
+
+- **`Coupon` (§7.5) still exists and still works.** Promotions sit alongside it, not on top —
+  every existing code keeps behaving as it did. In the UI, present coupons as "simple codes" and
+  promotions as "campaigns"; don't merge the two screens.
+- **A gift card's plaintext code is returned exactly once, from the create call.** Show it in a
+  copy-to-clipboard dialog and say it can't be retrieved later. Every later read shows only
+  `codeSuffix`.
+- **Rate ids are server-generated.** Editing a zone replaces its whole `rates` array and issues
+  new ids — don't try to preserve them client-side.
+- **Terms and Privacy pages are merchant-authored `Page` blocks.** They are legally required in
+  most markets, and there was nowhere to put them before this. Consider seeding empty drafts.
+
+### 7.14 CSV import / export (added 2026-08-16, §9.28 — Admin-tier only)
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| POST | `.../products/import` | `multipart/form-data`, field `file` (max 5 MB) | `ProductImportResult` |
+| GET | `.../products/export` | — | `text/csv` download |
+
+```ts
+type ProductImportResult = { created: number; updated: number; skipped: number; errors: string[] };
+```
+
+Header row, in this order: `sku,name,category,description,price,costPrice,stockQuantity,brand,
+barcode,weightKg,tags` (tags pipe-separated). **Upsert keyed on SKU** — re-importing updates
+rather than duplicating, and `status` is deliberately left alone so a round-trip can't
+republish something the merchant took down. A row naming a category that doesn't exist is
+skipped and reported, not auto-created. Export produces exactly the import format, so
+"export → edit in Excel → import" is the intended loop. Render `errors` as a per-row list; it
+is the whole value of the response.
+
+### 7.15 Audit log (added 2026-08-16, §9.35 — Admin-tier only)
+
+`GET .../audit-log?userId=&resourceId=&from=&to=&page=&pageSize=` → `PagedResult<AuditLogResponse>`
+
+```ts
+type AuditLogResponse = {
+  id: string; userId: string; userEmail: string; role: string;
+  method: string; path: string; routeTemplate: string; statusCode: number;
+  ipAddress: string; resourceId: string | null; durationMs: number; createdAt: string;
+};
+```
+
+Every mutating request is recorded — who, what route, what outcome. **Entries are HTTP-shaped,
+not domain-shaped:** you get "this user DELETEd this product and got a 204", not a before/after
+field diff. Render it as an activity feed grouped by user and day, and set expectations
+accordingly rather than promising a change history. Admin-tier only, deliberately: it names the
+staff who performed each action.
+
+### 7.16 Dashboard (added 2026-08-16, §9.32 — Admin-tier only)
+
+`GET .../analytics/dashboard?from=&to=` → `BusinessDashboardResponse`. Both params optional;
+defaults to the last 30 days.
+
+```ts
+type BusinessDashboardResponse = {
+  from: string; to: string;
+  revenue: number; grossProfit: number;
+  orderCount: number; deliveredCount: number; cancelledCount: number;
+  averageOrderValue: number;
+  uniqueCustomers: number; repeatCustomers: number; repeatCustomerRate: number; newCustomers: number;
+  pendingReturns: number; lowStockCount: number;
+  dailySales: { date: string; revenue: number; orderCount: number }[];
+  topProducts: { productId: string; productName: string; quantitySold: number; revenue: number }[];
+  statusBreakdown: { status: string; count: number }[];
+  currency: string;
+};
+```
+
+**This replaces the client-side assembly this document used to recommend.** There is one request
+for the whole dashboard now. Revenue is recognised on `Delivered` only — the same rule the P&L
+and SuperOffice analytics use, so the numbers on different screens agree. `orderCount` is
+broader (every non-cancelled order), because pipeline activity is worth seeing before it becomes
+revenue; don't present the two as if they measure the same thing.
 
 ---
 
@@ -608,20 +961,20 @@ accountant as a system of record.
 1. **Login** (with resolved Business branding pre-login, per §3), plus a "Forgot password?"
    link (§5) — worth building the screen even though real email delivery doesn't exist yet
    (§7.1's note), so it's ready the moment a provider is wired in.
-2. **Dashboard** — still no single aggregate-stats endpoint for one Business (SuperOffice's
-   `analytics`, §9.8, is cross-business and Admin-tier is the only Business-scoped Admin here
-   with the pieces to assemble one client-side: `GET .../inventory/low-stock` count, and
-   `GET .../accounting/profit-and-loss` for a trailing-30-days net profit figure, both real
-   requests now, not the "compute from list responses" workaround this doc previously
-   recommended). Staff sessions can't hit the accounting endpoint (§9.3) — show them the
-   low-stock count and an order-count widget only.
+2. **Dashboard** — **one request now**: `GET .../analytics/dashboard` (§7.16). Revenue, gross
+   profit, AOV, repeat-customer rate, a daily sales chart, top products, a status funnel,
+   pending returns and low stock all come back together. The client-side assembly this document
+   used to recommend is obsolete. Admin-tier only (§9.3, financial data) — Staff sessions still
+   can't call it, so give them the low-stock list and an order-count widget instead.
 3. **Business Profile** (§7.2) — including the new `defaultDeliveryFee` field.
 4. **Categories** (§7.3) — flat list or the new tree view; create/edit for everyone, delete
    Admin-tier only.
-5. **Products** (§7.4) — list with status filter/badges, create/edit (including variants and
-   reorder threshold), image upload, publish (Draft→Active) as a distinct visible action,
-   delete Admin-tier only, an "Adjust Stock" action opening onto §7.9's endpoint instead of a
-   stock field in the main edit form.
+5. **Products** (§7.4) — paged list with server-side `search`, status filter/badges,
+   create/edit (variants, reorder threshold, and **`costPrice` — prompt for it, everything in
+   §7.10 depends on it**, plus weight/brand/barcode/SEO/publish-window), image upload, publish
+   (Draft→Active) as a distinct visible action, delete Admin-tier only, an "Adjust Stock" action
+   opening onto §7.9's endpoint instead of a stock field in the main edit form, and CSV
+   import/export (§7.14) for bulk work.
 6. **Coupons** (§7.5) — read-only for Staff, full CRUD for Admin-tier.
 7. **Inventory** (§7.9) — low-stock list, valuation summary, stock-movement history per
    product.
@@ -630,10 +983,32 @@ accountant as a system of record.
 9. **Staff** (§7.6) — list, invite/create, block/unblock.
 10. **Customers** (§7.6) — read-only list.
 11. **Delivery Agents** (§7.7) — list, status management, balance/completed-deliveries display.
-12. **Orders** (§7.8) — list with status filter, detail view with a real status-history and
-    payment-status-history timeline (now backend-provided, no workaround needed), a status
-    dropdown constrained to the current status's legal next steps, a "Mark as Paid" action,
-    delivery assignment.
+12. **Orders** (§7.8) — paged list with **server-side** status/payment/date/search filtering
+    (stop filtering in the browser), detail view with a real status-history and
+    payment-status-history timeline, a status dropdown constrained to the current status's legal
+    next steps, a "Mark as Paid" action, delivery assignment, plus (new 2026-08-16) an external
+    courier tracking form, an internal-notes field, and an "Issue invoice" action off
+    `GET .../orders/{id}/invoice` — the response carries everything a printable invoice needs;
+    rendering it as a PDF is this app's job, the API supplies the data.
+
+**New pages for the §9B areas** (all Admin-tier unless noted):
+
+15. **Returns queue** (§7.11) — the three-step decision → received → refund flow, Staff-visible
+    except the refund action. Badge the pending count in the nav.
+16. **Review moderation** (§7.12) — queue filtered to `Pending`, with verified-purchase badges
+    and a merchant-reply box. Staff-visible except delete.
+17. **Promotions & customer groups** (§7.13) — campaigns are a genuinely different mental model
+    from coupons; keep the screens separate and don't merge them into §7.5.
+18. **Gift cards & store credit** (§7.13) — issue dialog that shows the plaintext code **once**,
+    a card list by suffix, and a per-customer credit statement.
+19. **Shipping zones** (§7.13) — zone list with a rate-table editor per zone.
+20. **Storefront content** (§7.13) — banners with schedules, a page editor (Markdown) that seeds
+    Terms and Privacy drafts, and a nav-menu builder.
+21. **Audit log** (§7.15) — activity feed, filterable by user, resource and date.
+22. **Settings → Tax & invoicing** (§7.2's `UpdateBusinessRequest`) — tax rate, inclusive/
+    exclusive pricing, registration numbers, invoice prefix and seller legal identity, return
+    window, review auto-publish, guest-checkout toggle. Every one of these changes what the
+    storefront renders or what customers are charged, so it belongs behind Admin-tier.
 13. **DeliveryAgent-only shell** (§4): My Deliveries (`GET .../orders/assigned-to-me`), My
     Status (`GET`/`PATCH .../delivery-agents/me`), status update on individual assigned orders.
 14. **My Profile** (`GET`/`PUT /api/auth/me`).

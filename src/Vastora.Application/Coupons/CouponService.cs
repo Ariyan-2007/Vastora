@@ -55,7 +55,7 @@ public class CouponService(IMongoRepository<Coupon> coupons) : ICouponService
     public async Task DeleteAsync(string tenantId, string businessId, string couponId, CancellationToken ct = default)
     {
         await GetScopedAsync(tenantId, businessId, couponId, ct);
-        await coupons.DeleteAsync(couponId, ct);
+        await coupons.DeleteAsync(couponId, ct: ct);
     }
 
     public async Task<decimal> ValidateAndPriceAsync(string businessId, string code, decimal orderAmount, CancellationToken ct = default)

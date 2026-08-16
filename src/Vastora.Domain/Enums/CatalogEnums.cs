@@ -23,3 +23,24 @@ public enum StockMovementType
     Adjustment = 4,
     DamageWriteOff = 5
 }
+
+/// <summary>§9.25. Reviews are held for moderation by default — see ReviewService.</summary>
+public enum ReviewStatus
+{
+    Pending = 1,
+    Published = 2,
+    Rejected = 3
+}
+
+/// <summary>Public catalog sort options — §9.29.</summary>
+public enum ProductSort
+{
+    /// <summary>IsFeatured first, then SortWeight ascending, then newest. The merchandising default.</summary>
+    Relevance = 1,
+    Newest = 2,
+    PriceAscending = 3,
+    PriceDescending = 4,
+    TopRated = 5,
+    BestSelling = 6,
+    NameAscending = 7
+}

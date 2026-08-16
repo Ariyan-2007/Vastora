@@ -58,4 +58,20 @@ public class AccountingController(ICurrentUserContext currentUser, IAccountingSe
         var result = await accountingService.GetBalanceSheetAsync(businessId, ct);
         return Ok(result);
     }
+
+    /// <summary>
+    /// §9.32. The per-business dashboard a BusinessAdmin previously had no endpoint for at all —
+    /// §9.8's analytics are TenantOwner-only, so the platform's most common user could list orders
+    /// and add them up by hand or nothing. Defaults to the last 30 days.
+    /// </summary>
+    [HttpGet("analytics/dashboard")]
+    public async Task<ActionResult<BusinessDashboardResponse>> GetDashboard(
+        string businessId, [FromQuery] DateTime? from, [FromQuery] DateTime? to, CancellationToken ct)
+    {
+        var toDate = to ?? DateTime.UtcNow;
+        var fromDate = from ?? toDate.AddDays(-30);
+
+        var result = await accountingService.GetDashboardAsync(businessId, fromDate, toDate, ct);
+        return Ok(result);
+    }
 }

@@ -31,3 +31,6 @@ public record ForgotPasswordRequest(string Email);
 
 /// <summary>Shared by every realm — the token itself already identifies which user/account it belongs to.</summary>
 public record ResetPasswordRequest(string Token, string NewPassword);
+
+/// <summary>§9.34. Shared by every realm — the token identifies the account, same as password reset.</summary>
+public record VerifyEmailRequest(string Token);

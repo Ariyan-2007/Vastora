@@ -67,7 +67,11 @@ public class CategoryService(IMongoRepository<Category> categories) : ICategoryS
             throw new NotFoundException(nameof(Category), categoryId);
         }
 
-        await categories.DeleteAsync(categoryId, ct);
+        // The unique (BusinessId, Slug) index doesn't know about soft deletes — a flagged row
+        // still occupies its slug. Retire the slug first so the name can be reused (§9.35).
+        category.Slug = $"{category.Slug}-deleted-{DateTime.UtcNow:yyyyMMddHHmmss}";
+        await categories.UpdateAsync(category, ct);
+        await categories.DeleteAsync(categoryId, ct: ct);
     }
 
     public async Task<List<CategoryTreeNode>> GetTreeAsync(string businessId, CancellationToken ct = default)

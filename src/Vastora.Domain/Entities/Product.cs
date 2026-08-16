@@ -40,6 +40,14 @@ public class Product : BaseEntity, ITenantScoped, IBusinessScoped
 
     public decimal Price { get; set; }
 
+    /// <summary>
+    /// What this unit cost the business to acquire — §9.31. Drives COGS, gross margin, and
+    /// inventory-valued-at-cost. Null means "not recorded", and every consumer treats a null
+    /// cost as zero margin contribution rather than guessing, so a business that never fills
+    /// this in gets honest gaps in its P&amp;L instead of invented numbers.
+    /// </summary>
+    public decimal? CostPrice { get; set; }
+
     public decimal? CompareAtPrice { get; set; }
 
     public decimal? DiscountPercent { get; set; }
@@ -63,6 +71,54 @@ public class Product : BaseEntity, ITenantScoped, IBusinessScoped
     public ProductStatus Status { get; set; } = ProductStatus.Draft;
 
     public List<ProductVariant> Variants { get; set; } = [];
+
+    /// <summary>Denormalised from the Review collection (§9.25) so the catalog can sort by rating without a join.</summary>
+    public double AverageRating { get; set; }
+
+    public int ReviewCount { get; set; }
+
+    // --- §9.28: fields downstream features need before they can exist at all ---
+
+    /// <summary>Kilograms. Null = unknown; weight-based shipping rates (§9.20) skip such products.</summary>
+    public decimal? WeightKg { get; set; }
+
+    public decimal? LengthCm { get; set; }
+
+    public decimal? WidthCm { get; set; }
+
+    public decimal? HeightCm { get; set; }
+
+    public string Brand { get; set; } = string.Empty;
+
+    /// <summary>GTIN/UPC/EAN — needed for marketplace feeds and warehouse scanning.</summary>
+    public string Barcode { get; set; } = string.Empty;
+
+    public string MetaTitle { get; set; } = string.Empty;
+
+    public string MetaDescription { get; set; } = string.Empty;
+
+    /// <summary>Scheduled go-live. An Active product before this instant is still withheld from the public catalog.</summary>
+    public DateTime? PublishedAt { get; set; }
+
+    /// <summary>Scheduled retirement, same idea in reverse.</summary>
+    public DateTime? UnpublishedAt { get; set; }
+
+    public bool IsFeatured { get; set; }
+
+    /// <summary>Lower sorts first within a category. Ties fall back to newest-first.</summary>
+    public int SortWeight { get; set; }
+
+    /// <summary>Tax class key resolved against the Business's tax rates (§9.19). Empty = the Business default rate.</summary>
+    public string TaxClass { get; set; } = string.Empty;
+
+    /// <summary>True once PublishedAt/UnpublishedAt allow it — Status alone is not enough (§9.28).</summary>
+    public bool IsPubliclyVisibleNow(DateTime now) =>
+        Status == ProductStatus.Active
+        && (PublishedAt is null || PublishedAt <= now)
+        && (UnpublishedAt is null || UnpublishedAt > now);
+
+    /// <summary>Margin per unit, null when CostPrice was never recorded — never guessed as zero cost.</summary>
+    public decimal? UnitMargin => CostPrice is null ? null : EffectivePrice - CostPrice.Value;
 
     public decimal EffectivePrice =>
         DiscountPercent is > 0 && (DiscountExpiresAt is null || DiscountExpiresAt > DateTime.UtcNow)

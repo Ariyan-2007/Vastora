@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Vastora.Application.Common;
 using Vastora.Application.Common.Interfaces;
 using Vastora.Application.Products;
 using Vastora.Domain.Enums;
@@ -22,9 +23,10 @@ public class ProductsController(ICurrentUserContext currentUser, IProductService
     };
 
     [HttpGet]
-    public async Task<ActionResult<List<ProductResponse>>> GetAll(string businessId, CancellationToken ct)
+    public async Task<ActionResult<PagedResult<ProductResponse>>> GetAll(
+        string businessId, [FromQuery] string? search, [FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken ct = default)
     {
-        var result = await productService.GetForBusinessAsync(businessId, ct);
+        var result = await productService.GetForBusinessAsync(businessId, PageRequest.Of(page, pageSize), search, ct);
         return Ok(result);
     }
 

@@ -216,6 +216,34 @@ All entities live in `Vastora.Domain.Entities`, inherit `BaseEntity` (`Id`, `Cre
 | `LedgerEntry` | Business | Revenue/Refund/DeliveryPayout, written only by `OrderService` on Delivered/Refunded transitions and agent payout (§9.16a) — no direct-write endpoint. |
 | `Expense` | Business | Manually entered cost not tied to an Order (rent, ads, wages) — full BackOffice CRUD (§9.16b). |
 
+**Added by §9B (2026-08-16).** Every one of these implements `ITenantScoped`/`IBusinessScoped`
+where relevant and inherits the soft-delete fields §9.35 added to `BaseEntity`.
+
+| Entity | Scoped to | Purpose |
+|---|---|---|
+| `Review` | Business | Customer rating of a Product (§9.25). Server-verified purchase, moderation status, merchant reply. Aggregated onto `Product.AverageRating`/`ReviewCount`. |
+| `WishlistItem` | Business + Customer | One saved product per row — not an embedded list — so back-in-stock alerts can query "who wants this?" without scanning users (§9.26). |
+| `ReturnRequest` | Business | RMA aggregate (§9.21): partial line/quantity returns, own lifecycle, restock on `Received`, refund settlement on `Refunded`. |
+| `Promotion` | Business | The general discount rule `Coupon` can't express (§9.23) — automatic/coded, BOGO, free shipping, scoped, group-targeted, per-customer capped. `Coupon` is untouched and still works. |
+| `CustomerGroup` | Business | Named customer segment with a blanket group discount (§9.23). Membership lives here; `AppUser.CustomerGroupIds` is only a cache. |
+| `GiftCard` | Business | Hashed code shown once, drawn down at checkout. A **liability** until redeemed, not revenue (§9.24). |
+| `StoreCreditEntry` | Business + Customer | Append-only credit ledger; the balance is always the sum of entries, never a mutable field (§9.24). |
+| `ShippingZone` | Business | Destination bands with subtotal/weight rate tables, replacing the flat `DefaultDeliveryFee` (§9.20). |
+| `ContentBlock` | Business | Polymorphic storefront content: banners, pages (Terms/Privacy), nav items, articles (§9.30). |
+| `EmailVerificationToken` | User | Hashed, expiring, single-use — same shape as `PasswordResetToken` (§9.34). |
+| `AuditLogEntry` | Business | Who changed what, written centrally by `AuditLogFilter` for every mutating request (§9.35). |
+| `IdempotencyRecord` | — | Caller + key → stored response, so a retried checkout replays instead of re-charging (§9.17). TTL-expired by Mongo. |
+| `WebhookSubscription` / `WebhookDelivery` | Tenant | Tenant-registered HTTPS endpoints, HMAC-signed payloads, per-attempt audit rows (§9.39). |
+| `ApiKey` | Tenant | Server-to-server credential: public key id + hashed secret, scopes, expiry, revocation (§9.39). |
+
+**Changed existing entities.** `Product` gained `CostPrice` (the field that unblocked §9.31),
+weight/dimensions, brand, barcode, SEO meta, publish window, featured flag and tax class.
+`Order` gained a currency snapshot, tax fields, cost-per-line snapshots, billing address,
+contact snapshot, guest fields, fulfillment method, carrier tracking, invoice number and
+discount/gift-card breakdowns. `Cart` gained a guest token, variant-aware items and promotion
+codes. `Business` gained `Tax`, `Invoicing`, return-window and reviews/guest-checkout switches.
+`AppUser` gained `EmailVerifiedAt`, `NotificationPreferences` and `AnonymizedAt`.
+
 ---
 
 ## 6. Configuration & running locally
@@ -325,6 +353,71 @@ in this session. Not a paper design — every endpoint listed here was actually 
 **Health**
 - `GET /health` — public; a real MongoDB ping, not just "the process is up" (§9.11).
 
+### Endpoints added by §9B — 2026-08-16
+
+128 routes total, 55 of them new. **Two changes affect existing callers:** every list endpoint
+now returns a `PagedResult<T>` envelope (`{ items, page, pageSize, totalCount, totalPages,
+hasNextPage, hasPreviousPage }`) instead of a bare array, and the public catalog is filtered
+via a `CatalogQuery` querystring rather than two loose parameters.
+
+**Auth (§9.34, §9.36)**
+- `POST /api/auth/verify-email` — public; the token identifies the account, same as password reset.
+- `POST /api/auth/resend-verification` — any authenticated user.
+- `POST /api/auth/unsubscribe/{token}` — public; one-click marketing opt-out, no login required.
+
+**Shop — cart (§9.22, §9.23, §9.27)**
+- The whole cart controller is now `[AllowAnonymous]`. A signed-in Customer is scoped by JWT; a
+  guest sends `X-Cart-Token` (minted server-side on first write, returned as `guestToken`) plus
+  `?businessId=`. An authenticated identity always wins over any token that's also present.
+- `POST/DELETE /api/shop/cart/promotions[/{code}]` — stackable promotion codes, separate from the single legacy coupon.
+- `POST /api/shop/cart/merge?guestToken=` — Customer only; folds the anonymous cart in on login.
+- Cart responses now carry `discounts`, `discountTotal`, `estimatedTotal`, `itemCount` and `currency`.
+
+**Shop — checkout & orders (§9.17, §9.21, §9.27)**
+- `POST /api/shop/orders/checkout` — now `[AllowAnonymous]`; honours an optional `Idempotency-Key` header.
+- `POST /api/shop/orders/preview` — prices the cart with nothing committed: no stock moves, no coupon burnt.
+- `GET /api/shop/orders/lookup?businessId&orderNumber&email` — public; guest order tracking.
+- `POST/GET /api/shop/orders/returns`, `POST .../returns/{id}/cancel` — Customer-initiated RMAs.
+
+**Shop — account (§9.24, §9.25, §9.26, §9.37)**
+- `GET/POST/DELETE /api/shop/account/wishlist[/{productId}]`
+- `POST /api/shop/account/reviews`
+- `GET /api/shop/account/store-credit`, `GET .../gift-cards/{code}`
+- `GET /api/shop/account/data-export`, `PUT .../notification-preferences`, `DELETE /api/shop/account`
+
+**Shop — public catalog (§9.25, §9.26, §9.29, §9.30)**
+- `GET /api/shop/{slug}/products` — now takes `CatalogQuery` (`categoryId`, `search`, `minPrice`,
+  `maxPrice`, `brand`, `tags`, `inStockOnly`, `minRating`, `featuredOnly`, `sort`, `page`, `pageSize`)
+  and returns a paged envelope. **`costPrice`/`unitMargin` are stripped from this projection.**
+- `GET .../products/facets` — filter values and counts over the same filter as the listing.
+- `GET .../products/{id}/reviews`, `.../reviews/summary`, `POST .../reviews/{id}/helpful`
+- `GET .../products/{id}/also-bought`, `.../related`
+- `GET .../banners`, `.../menu`, `.../pages`, `.../pages/{slug}`
+
+**BackOffice — orders (§9.20, §9.33)**
+- `GET .../orders` — now takes `OrderQuery` (`status`, `paymentStatus`, `search`, `from`, `to`, `page`, `pageSize`).
+- `PATCH .../orders/{id}/shipment` — external courier tracking; also advances to `OutForDelivery`.
+- `PATCH .../orders/{id}/internal-note`
+- `GET .../orders/{id}/invoice` — assigns a gapless sequential number on first call.
+
+**BackOffice — returns & reviews (§9.21, §9.25)**
+- `GET .../returns`, `GET .../returns/{id}`, `POST .../returns/{id}/decision`, `.../received`,
+  `.../refund` — refund is Admin-tier, the rest Staff-permitted.
+- `GET .../reviews`, `PATCH .../reviews/{id}/status`, `POST .../reviews/{id}/reply`, `DELETE .../reviews/{id}`.
+
+**BackOffice — merchandising, Admin-tier only (§9.20, §9.23, §9.24, §9.30)**
+- `.../promotions`, `.../customer-groups` (+ `/members`), `.../gift-cards`,
+  `.../customers/{id}/store-credit`, `.../shipping-zones`, `.../content` — full CRUD on each.
+
+**BackOffice — catalog, analytics, audit (§9.28, §9.32, §9.35)**
+- `POST .../products/import`, `GET .../products/export` — CSV, upsert keyed on SKU, Admin-tier.
+- `GET .../analytics/dashboard?from&to` — the per-business dashboard §9.8 never provided.
+- `GET .../audit-log` — Admin-tier; filterable by user, resource and date.
+
+**SuperOffice — integrations, TenantOwner only (§9.39)**
+- `GET/POST/DELETE /api/integrations/webhooks[/{id}]`, `GET .../webhooks/events`, `GET .../webhooks/{id}/deliveries`
+- `GET/POST/DELETE /api/integrations/api-keys[/{id}]`
+
 ### Deliberate simplifications — updated 2026-08-15
 
 Most of the foundation-session list below was resolved in the session that added §9.3–9.8,
@@ -363,6 +456,24 @@ Most of the foundation-session list below was resolved in the session that added
   balance-sheet are a deliberately simple model — a real accountant would want more than this
   before treating it as a system of record.
 
+**Updated 2026-08-16 — three of the items above are now stale, and this is what replaced them:**
+
+- **Product variants are no longer catalog-only.** §9.22 threaded `VariantId` through
+  Cart → Order → StockMovement, made variant stock atomic, and made `PriceOverride` count.
+- **Integration tests are still absent**, unchanged and still blocked on Docker. The unit suite
+  grew from 37 to 78 tests, including regression coverage for every correctness defect §9B found.
+- **CORS still defaults open**, unchanged. §9.40 did tighten the credential endpoints to
+  10 requests/minute against the global 100.
+
+**Still exactly as described above:** no payment gateway, no self-serve tenant upgrade flow, no
+real email/SMS provider, local-disk file storage, and single-entry cash-basis accounting — though
+§9.31 fixed that model's two actual *errors* (inventory valued at retail, no COGS) and gave it a
+liabilities side, so it is now simple rather than wrong.
+
+The list above is only what the *foundation* roadmap knowingly cut. The full audit against a
+production e-commerce platform is §9.17–§9.40, and §9.40 consolidates the remaining
+infrastructure items into one pre-launch checklist.
+
 ---
 
 ## 8. What was learned from Antivaly (for context on domain shape)
@@ -394,9 +505,22 @@ actually useful next — this is a map, not a contract.
 As of 2026-08-15, §9.1–§9.3, §9.5, §9.7–§9.9, §9.11–§9.16 are fully done, and §9.4/§9.6/§9.10/
 §9.12 are done except for the pieces each one explicitly flags as blocked on a product decision
 (payment gateway choice, real email/SMS provider, self-serve tenant-upgrade process) or missing
-infrastructure (Docker, for integration tests). What's left to pick up next is exactly those
-flagged gaps — read each section's own "not done" note for the specifics rather than treating
-this paragraph as the authority; it will go stale faster than they will.
+infrastructure (Docker, for integration tests). Read each section's own "not done" note for the
+specifics rather than treating this paragraph as the authority; it will go stale faster than
+they will.
+
+**§9.1–§9.16 is the foundation roadmap. §9.17–§9.40 (§9B, audited and implemented 2026-08-16)
+is the commerce-completeness roadmap — 55 of its 77 items are done.** Between them the backend
+now covers what a production e-commerce platform is expected to do: checkout that can't oversell
+or double-charge, tax, shipping zones, returns and partial refunds, variant-aware carts, a real
+promotions engine, gift cards and store credit, reviews, wishlists, guest checkout, faceted
+search, storefront content, correct COGS-based accounting, per-business analytics, invoices,
+email verification, audit logging, lifecycle notifications, data-rights endpoints and tenant
+webhooks.
+
+The 22 open items are listed with their reasons in §9B's intro. The short version: most need a
+vendor or product decision rather than code, integration tests are still blocked on Docker, and
+the rest were scoped down on purpose.
 
 ### 9.1 Wire up request validation — done (2026-08-15)
 - [x] Added `ValidationActionFilter` (`Vastora.API/Filters/`), a global `IAsyncActionFilter`
@@ -718,11 +842,500 @@ Single-entry, cash-basis bookkeeping, not double-entry/GAAP, as originally scope
       deviation note) rather than built as a separate step — `DeliveryPayout` entries exist and
       flow into the P&L now.
 
+### Commerce-completeness audit — 2026-08-16 (§9B, implemented 2026-08-16)
+
+§9.1–§9.16 built the platform *skeleton*: multi-tenancy, catalog, cart, orders, inventory,
+accounting, auth. This section is the result of auditing that skeleton against what a
+production e-commerce platform is actually expected to do — both the correctness gaps found by
+reading the code, and the feature primitives that every mature commerce API (Medusa, Saleor,
+commercetools, Shopify) treats as core and Vastora currently has no representation for at all.
+
+**§9B was audited and then implemented in the same day (2026-08-16).** Each section below keeps
+its original finding — the evidence and the *why*, written before any code — and now carries a
+bold status line stating exactly what landed and what did not. Read the finding for the
+reasoning and the status line for the truth; where they disagree, the status line is newer.
+
+**55 of 77 items are done; 22 remain open and stay unchecked.** What's left clusters into three
+honest categories, and none of it is an oversight:
+
+- **Needs a product or vendor decision, not code.** Cloud storage provider, image CDN, payment
+  gateway (§9.6), real email/SMS provider (§9.10), deployment target, secret store, APM vendor.
+  The seams exist in every case; the choice does not.
+- **Needs infrastructure this environment doesn't have.** Integration tests are still blocked on
+  Docker, exactly as §9.12 recorded.
+- **Deliberately scoped down.** Atlas Search (§9.29 still regex-scans), per-product price lists
+  (§9.23 ships group-level discounts instead), partial shipment (§9.20 needs per-item fulfillment
+  state), PDF rendering (§9.33 ships the data, the frontends render it), loyalty points, product
+  Q&A, multi-language content, and custom-domain routing.
+
+**One item is a genuine half-step and worth calling out:** §9.39's `IApiKeyService` issues and
+validates keys and is unit-tested, but no authentication *handler* consumes them yet — keys can
+be created and verified, not yet used to authenticate a live request.
+
+### 9.17 Checkout integrity — transactions, oversell, idempotency
+
+**done (2026-08-16).** All four sub-items landed. Lines are validated before any stock moves; each deduction is an atomic guarded `$inc` via the new `IProductStockStore`, so overselling is refused by the database rather than by a C# read-then-write; a mid-flight failure compensates every deduction already applied; `Idempotency-Key` is honoured on checkout via `[Idempotent]`; and coupon/promotion usage now increments through `TryIncrementBelowAsync`. **Not** a MongoDB transaction — compensating rollback instead, because sessions would have to thread through every repository call; the trade-off is written up in `CompensateStockAsync`'s own comment. Smoke-tested live: a two-line cart whose second line was short left the first line's stock at exactly 50, with no order written.
+The highest-severity finding in this audit. `OrderService.CheckoutAsync`
+(`src/Vastora.Application/Orders/OrderService.cs`) has three distinct integrity problems, all
+in the same ~40 lines:
+- [x] **Stock is deducted inside the item loop, before the order exists.** Each iteration calls
+      `inventoryService.RecordMovementAsync(...)` immediately. If item 3 of 5 throws
+      (`NotFoundException` for a deleted product, `ConflictException` for insufficient stock),
+      items 1 and 2 have already been decremented and had `StockMovement` rows written — and
+      nothing rolls them back. The customer gets a 404/409, the merchant silently loses stock.
+      Same exposure if the coupon call or `orders.AddAsync` fails after the loop completes.
+      Fix shape: validate every line item's availability *first*, then write. A full fix wants a
+      MongoDB multi-document transaction (`IClientSessionHandle`) — Atlas is a replica set, so
+      this is available today; `IMongoRepository<T>` has no session parameter, so the interface
+      needs one threaded through.
+- [x] **Oversell race.** `if (product.TrackInventory && product.StockQuantity < cartItem.Quantity)`
+      is a read, and the decrement is a separate later write. Two concurrent checkouts for the
+      last unit both pass the check. Needs a conditional atomic update
+      (`FindOneAndUpdate` with `StockQuantity >= qty` in the filter and `$inc` in the update),
+      which `IMongoRepository<T>` cannot currently express — it only has whole-document
+      `UpdateAsync`. Alternatively a reservation model (hold stock at cart, release on
+      expiry), which is the more standard commerce answer but a much larger change.
+- [x] **No idempotency.** `POST /api/shop/orders/checkout` has no idempotency key. A double-tap
+      on a flaky connection places two real orders and deducts stock twice. Standard fix: an
+      `Idempotency-Key` header, a short-lived key→response collection, replay the stored
+      response on repeat. Worth doing before a payment gateway (§9.6) makes double-submission
+      cost real money.
+- [x] **Coupon usage is not atomic either.** `couponService.RegisterUsageAsync` increments a
+      counter with the same read-then-write shape, so a usage-capped coupon can be redeemed
+      past its cap under concurrency.
+
+### 9.18 Pagination, filtering & sorting on every list endpoint
+
+**done (2026-08-16).** `IMongoRepository.FindPagedAsync` + `PagedResult<T>`/`PageRequest`, with skip/limit/sort/count evaluated by MongoDB. Every list endpoint returns the envelope; `OrderQuery` adds server-side status/payment/date/search filtering. `DatabaseInitializer` now creates the compound query-path indexes these reads need, separately from the pre-existing uniqueness constraints. **Breaking:** list responses are now `{items, page, pageSize, totalCount, ...}` rather than a bare array — all three frontend blueprints were updated in the same session.
+- [x] `IMongoRepository<T>` (`Vastora.Application/Common/Interfaces/`) exposes `GetAllAsync`
+      and `FindAsync` and **nothing else** — no skip, no limit, no sort, no total count. Every
+      list endpoint in the API consequently returns the entire matching collection: orders,
+      products, customers, stock movements, ledger entries. A business with 50k orders gets a
+      50k-document response, and `GetForBusinessAsync` then sorts it *in memory* with
+      `.OrderByDescending(o => o.PlacedAt)` after the driver has already materialised the lot.
+      This is fine at the current smoke-test scale and fails hard at real scale.
+      Already flagged from the client side in `docs/SUPEROFFICE_FRONTEND_BLUEPRINT.md` — the
+      frontend docs' pagination note and this item are the same gap.
+- [x] Add skip/take/sort/total to the repository, a shared `PagedResult<T>` envelope, and a
+      consistent `?page=&pageSize=&sort=` convention across every list route. Changing the
+      response shape from a bare array to an envelope is a **breaking API change** — do it
+      before the three frontends are written, not after, and update all three docs in the same
+      session (per the rule at the top of this file).
+- [x] Add the compound indexes the paged queries will need (`(BusinessId, PlacedAt)` on Order,
+      `(BusinessId, Status)` on Product, ...). `DatabaseInitializer` today creates only unique
+      constraint indexes, not query-path indexes.
+
+### 9.19 Tax
+
+**done (2026-08-16), single-rate.** `Business.Tax` (`TaxSettings`) + `Product.TaxClass`, `ITaxService`, and `Order.TaxAmount`/`TaxRatePercent`/`PricesIncludeTax` snapshotted at checkout. Tax is computed on the **discounted** base and, for tax-inclusive businesses, *extracted* from the price rather than added on top. `TaxCollected` is its own ledger type, so it lands as a liability rather than revenue. Verified live: a 200 basket with a 20 discount and a 10% rate produced 18.00, not 20.00. Still deliberately **not** a jurisdiction engine — no per-region nexus rules, no Avalara/TaxJar; `ITaxService` is the seam for that.
+- [x] There is no tax anywhere in the system. `Order` has `Subtotal`, `DiscountAmount`,
+      `DeliveryFee`, `Total` and no `TaxAmount`; `Business` has no tax registration number, no
+      tax rate, no "prices include tax" flag. For most jurisdictions this makes the platform
+      unusable for a legally operating seller, and it makes §9.33's invoices impossible to
+      issue correctly.
+- [x] Minimum viable shape: a per-Business tax rate + tax-inclusive/exclusive pricing flag,
+      `Order.TaxAmount` computed at checkout and snapshotted like every other money field, and
+      tax as its own line in §9.16's P&L (tax collected is a liability, not revenue — the
+      current single-entry model has no liabilities at all, see §9.31).
+- [x] Anything beyond that (per-region rates, product tax classes, VAT vs. sales tax, an
+      Avalara/TaxJar provider behind an `ITaxService`) is a real project. Scope it when a tenant
+      actually needs it; do not build a US sales-tax nexus engine on spec.
+
+### 9.20 Shipping & fulfillment depth
+
+**mostly done (2026-08-16).** `ShippingZone`/`ShippingRate` with country+region matching (most specific wins), subtotal and weight bands, free-shipping thresholds expressed as a zero-priced band, and multiple selectable methods at checkout. `Product.WeightKg`/dimensions added to feed it. External-courier tracking is now first-class (`PATCH .../orders/{id}/shipment`, which also advances the order to `OutForDelivery`), and `FulfillmentMethod` covers Pickup/ExternalCourier/Digital — closing §9.14's deferred pickup item. **Still not done:** partial shipment / split fulfillment, which needs per-item fulfillment state rather than one `Order.Status`.
+`Business.DefaultDeliveryFee` is one flat decimal, and §9.7 already noted zone/distance logic
+was out of scope. The full list of what a real seller expects and cannot express today:
+- [x] **Shipping zones / rate tables** — fee by destination, order value, or weight. Requires
+      product weight/dimensions, which `Product` does not have (§9.28).
+- [x] **Multiple shipping methods at checkout** — standard vs. express, customer-selectable.
+      `CheckoutRequest` takes a raw `DeliveryFee?` and no method identifier.
+- [x] **Free-shipping thresholds** — currently only expressible as a coupon, badly.
+- [x] **Third-party courier tracking.** `Order` has `DeliveryAgentUserId` and no carrier name,
+      tracking number, or tracking URL — so a Business with `DeliveryModuleEnabled = false`
+      (§9.14) that ships via an external courier has nowhere to record the shipment at all.
+- [ ] **Partial shipment / split fulfillment** — one `Order.Status` for the whole order means a
+      partially-shipped order cannot be represented.
+- [x] **Pickup as a first-class fulfillment type** — already flagged as deferred at the end of
+      §9.14; it belongs here.
+
+### 9.21 Returns, exchanges & partial refunds
+
+**done (2026-08-16).** Full RMA aggregate: `ReturnRequest` with its own lifecycle (Requested → Approved → Received → Refunded), partial line-and-quantity returns, a return window enforced from the Business's own `ReturnWindowDays`, staff approval that can settle for less than requested, and refund-to-original / store-credit resolutions. **The restock bug is fixed twice over:** returns restock on `→ Received` (not on approval, and not on refund), and the plain `→ Refunded` order transition — which previously wrote a ledger entry and left inventory untouched — now restocks too. Damaged returns write a `DamageWriteOff` note instead of restocking. Verified live: 3 bought, 1 returned, stock 47 → 48 only after Received, order stayed `Delivered` with `refundedAmount: 50`.
+- [x] `OrderStatus.Refunded` is the entire returns story: whole-order, all-or-nothing, no
+      customer-initiated path, no reason capture, no approval step, and — importantly — **no
+      restock**. Compare `CancelAsync`, which does write `Return` stock movements; the
+      `→ Refunded` transition writes a `LedgerEntry` and leaves inventory untouched. A refunded
+      item silently vanishes from stock.
+- [x] No partial refund: no amount field on the refund path, so refunding one line of a
+      five-line order is not representable, and §9.16a's `Refund` ledger entry can only ever be
+      for the full order total.
+- [x] No RMA entity, no return window policy, no exchange flow. Every mature commerce API
+      models return-vs-exchange as first-class — this is the single largest missing customer-
+      facing workflow in the system.
+
+### 9.22 Variant-aware Cart & Order
+
+**done (2026-08-16).** `VariantId` threads through `CartItem` → `OrderItem` → `StockMovement`. Variant stock is decremented atomically by its own positional array update, `PriceOverride` is respected by `PricingService`, and a product that *has* variants can no longer be added to a cart without choosing one — previously the storefront could display variants it had no way to sell.
+- [x] Promoting the boundary §9.5 deliberately drew into its own roadmap item, because it is
+      the one place where a shipped feature is actively misleading: `Product.Variants` exists,
+      is BackOffice-manageable, and is returned to the storefront — but `CartItem` and
+      `OrderItem` carry a bare `ProductId`, `ProductVariant.StockQuantity` is decremented by
+      nothing, and `EffectivePrice` ignores `PriceOverride`. A shop selling "Red / Large"
+      cannot actually sell "Red / Large" today; the storefront can display variants it has no
+      way to let a customer buy.
+- [x] Needs `VariantId` threaded through `CartItem` → `OrderItem` → `StockMovement`, variant-
+      level stock as the authority when variants exist, and `PriceOverride` respected in
+      pricing. Touches checkout, so land it *after* §9.17 rather than fighting the same code
+      twice.
+
+### 9.23 Promotions engine & customer segments
+
+**done (2026-08-16).** New `Promotion` aggregate alongside (not replacing) `Coupon`, so every existing code keeps working through the path it always used. Covers automatic no-code discounts, BOGO settled against the cheapest qualifying units, free shipping, product/category scoping, customer-group targeting, first-order-only, per-customer caps, priority and stackability. `CustomerGroup` adds segments with a blanket group discount — the wholesale-tier case. **Still open:** a full per-product price list; the group-level percentage is the deliberate scope-down.
+- [x] `Coupon` supports one percentage-or-fixed code with a usage cap and a validity window,
+      and `Cart` holds exactly one `CouponCode`. Not expressible: buy-X-get-Y, free shipping,
+      tiered/threshold discounts, category- or product-scoped discounts, stacking rules,
+      first-order-only, per-customer usage limits (the cap is global), scheduled campaigns, or
+      automatic discounts with no code at all.
+- [x] **No customer groups / segments.** Every mature platform (Medusa's Customer Groups and
+      Price Lists, Shopify's segments) uses them for B2B pricing, wholesale tiers, and targeted
+      promotions. Vastora's `AppUser` has a `Role` and nothing else to segment on.
+- [ ] **No price lists** — no way to give one customer group different prices, and no scheduled
+      price changes beyond the single `DiscountPercent`/`DiscountExpiresAt` pair on `Product`.
+
+### 9.24 Gift cards, store credit & loyalty
+
+**done (2026-08-16), loyalty excluded.** `GiftCard` (hashed code, shown once, balance-checked and redeemed at checkout) and an append-only `StoreCreditEntry` ledger whose balance is always the sum of its entries. Issuing a gift card books `GiftCardIssued`, and the outstanding float appears as a **liability** on the balance sheet — so selling one no longer reads as pure profit. Store credit is also the settlement route for §9.21 returns. **Not built:** points-based loyalty, which is a product decision about earn/burn rates rather than a missing mechanism.
+- [x] None of the three exist. Gift cards in particular are both a payment instrument and a
+      liability (see §9.31 — the accounting module has no liability concept, so selling a gift
+      card today would book as pure revenue and overstate profit).
+- [x] Store credit is also the natural settlement mechanism for §9.21's refunds, so the two
+      are worth scoping together.
+
+### 9.25 Reviews, ratings & Q&A
+
+**done (2026-08-16).** `Review` with server-verified purchase (checked against real `Delivered` order history, never trusted from the client), one review per customer per product enforced by a unique index as well as a service check, moderation queue, merchant replies, helpful counts, and a denormalised `AverageRating`/`ReviewCount` on `Product` for sorting. Held `Pending` by default unless the Business opts into `AutoPublishReviews`. Product Q&A was **not** built — same shape, no demand yet.
+- [x] No review entity, no rating aggregate on `Product`, no moderation queue, no
+      verified-purchase check. Already documented as an absence in
+      `docs/ANTIVALY_SHOP_BLUEPRINT.md` ("don't design a rating widget around data that doesn't
+      exist") — this item is the backend side of that note.
+- [x] Social proof is one of the highest-conversion-impact features in e-commerce and one of
+      the cheapest to build here: a `Review` entity scoped to Business + Product + Customer, a
+      denormalised `AverageRating`/`ReviewCount` on `Product` for sorting, and Admin-tier
+      moderation reusing the §9.3 permission split.
+- [ ] Product Q&A is the same shape and can share the entity if scoped down.
+
+### 9.26 Wishlist, recently viewed & recommendations
+
+**done (2026-08-16).** `WishlistItem` as a row per saved product (not an embedded list), specifically so §9.36's back-in-stock sweep can ask "who wants this product?" without scanning every user. `also-bought` is computed from real order co-occurrence; `related` falls back to same-category when there's no order history. Recently-viewed was **not** persisted server-side — it is client state, and storing it would add a write on every product view for no capability the client doesn't already have.
+- [x] No wishlist/favorites endpoint (also already flagged in the Shop blueprint), no
+      recently-viewed, no related/cross-sell products, no "customers also bought". The
+      `Order` collection already contains everything a first-cut co-purchase recommendation
+      needs — this is a query, not a data model change.
+- [x] Wishlist is the prerequisite for back-in-stock notifications (§9.36).
+
+### 9.27 Guest checkout & cart merge
+
+**done (2026-08-16).** Anonymous carts keyed on an `X-Cart-Token` the server mints on first write; guest checkout with an email-only contact snapshot; `POST /api/shop/cart/merge` folding the guest cart into the customer's on login (quantities summed, not replaced); and `GET /api/shop/orders/lookup` by order number + email, since a guest has no account to list orders under. Per-Business `GuestCheckoutEnabled` lets a seller still require accounts.
+- [x] Checkout requires a `Customer` JWT (`CheckoutAsync` takes a non-null `customerUserId`;
+      `Cart` is keyed on `BusinessId + CustomerUserId`). Forced registration before purchase is
+      a well-documented conversion killer, and the Shop blueprint already calls it out.
+- [x] Needs an anonymous cart identity (cart token cookie), an email-only order path, and a
+      **cart merge on login** — today a customer who fills a cart then logs in has no defined
+      merge behaviour because the anonymous cart cannot exist in the first place.
+- [x] Guest orders also need a lookup-by-email+order-number route, since there is no account to
+      list them under.
+
+### 9.28 Product data completeness & bulk import/export
+
+**done (2026-08-16).** `CostPrice` (the one that unblocked §9.31), weight and dimensions, brand, barcode, SEO meta fields, publish/unpublish window, featured flag, sort weight and tax class — plus CSV bulk import (upsert keyed on SKU) and export. `IsPubliclyVisibleNow` means an Active product genuinely can be scheduled. **Not done:** `sitemap.xml` and structured-data output, which belong to the storefront app rather than the API.
+`Product` is missing fields that downstream features need before they can be built at all:
+- [x] **`CostPrice`** — blocks §9.31 entirely (COGS, gross margin, inventory-at-cost). The
+      single highest-value field on this list.
+- [x] **Weight & dimensions** — blocks §9.20's weight-based shipping rates.
+- [x] **Brand/manufacturer, barcode/GTIN/UPC** — needed for marketplace feeds (Google Shopping,
+      Meta catalogs) and for any real warehouse workflow.
+- [ ] **SEO fields** (meta title/description, canonical URL) and a storefront `sitemap.xml` /
+      structured-data feed. The platform sells storefronts; storefronts that cannot be indexed
+      are worth measurably less.
+- [x] **Publish window / featured flag / sort weight** — `ProductStatus` is Draft/Active only,
+      so "goes live Friday" is a manual job.
+- [x] **Bulk CSV/Excel import & export** for products and inventory. Onboarding a business with
+      2,000 SKUs currently means 2,000 API calls, and §9.9's plan limits mean the Growth-tier
+      cap of 2,000 products is reachable by exactly the kind of tenant who will not enter them
+      by hand.
+
+### 9.29 Search & discovery depth
+
+**done (2026-08-16), still not Atlas Search.** Faceted filtering (category, brand, tags, price range, in-stock, rating), seven sort orders, and paging. Facets are computed over the *same* filter as the listing, so a facet can't promise a count the listing then fails to deliver. **The regex-scan limitation from §9.5 is unchanged** — an unanchored `Regex.IsMatch` still cannot use an index, so search is a collection scan per query. Atlas Search remains the answer and remains unbuilt; `BestSelling` sorts by review count as an acknowledged proxy, since there is no sales counter on `Product`.
+- [ ] §9.5 pushed search server-side via `Regex.IsMatch(field, Regex.Escape(search), IgnoreCase)`
+      — correct and injection-safe, but an unanchored regex **cannot use an index**, so it is a
+      full collection scan per search. It will be the first endpoint to fall over under load.
+- [ ] No faceted filtering (price range, tags, in-stock, rating), no sort options on the public
+      catalog (newest/price/popularity), no relevance ranking, no typo tolerance, no synonyms,
+      no search-term analytics. Atlas Search is available on the cluster already in use and is
+      the low-effort answer to most of this.
+
+### 9.30 Storefront content management
+
+**done (2026-08-16).** One polymorphic `ContentBlock` collection covering banners, static pages (About/Contact/**Terms**/**Privacy**), nav menu items and articles — with slugs, scheduling, publish state and SEO fields. Public read endpoints per type plus a nested menu builder. **`Business.CustomDomain` is still a field nothing reads** — domain verification, TLS provisioning and request routing are infrastructure work, not API work, and remain open.
+- [x] A Business can set a logo, banner, theme colour and description — and that is the entire
+      content model. No homepage layout, no promotional banners/slides with schedules, no
+      static pages (About / Contact / Shipping Policy / **Terms** / **Privacy Policy** — the
+      last two are legally required in most markets and there is nowhere to put them), no
+      navigation menu builder, no blog/content marketing.
+- [ ] `Business.CustomDomain` exists on the entity but nothing reads it — no domain
+      verification, no TLS provisioning, no request-routing path. Custom domains are usually a
+      paid-tier upsell; the field is currently a promise the platform does not keep.
+
+### 9.31 COGS, gross margin & accounting correctness
+
+**done (2026-08-16) — all three defects fixed.** Inventory is valued at cost (retail reported separately, never as an asset), products with no recorded cost are *counted* rather than silently valued at zero, COGS is written as its own ledger line at delivery from the `UnitCost` snapshotted on each `OrderItem`, and the P&L now reports `GrossProfit`/`GrossMarginPercent` alongside a `NetProfit` that finally subtracts what the goods cost. The balance sheet gained a liabilities side (tax payable, gift-card float) and a `NetPosition`. Verified live end to end: 225 order → revenue 205, COGS 120, gross profit 85 (41.46%), tax 20 carried as a liability, assets 585 at cost vs 800 at retail. **Still open:** multi-currency consolidation for a MultiBusiness tenant whose businesses trade in different currencies (§9.38).
+Three concrete defects in the §9.16 accounting module, not just absences:
+- [x] **Inventory is valued at retail price, not cost.** `InventoryService.GetValuationAsync`
+      computes `Σ(StockQuantity × p.Price)` — the *selling* price. That figure feeds §9.16c's
+      balance sheet as `TotalAssets`, so the balance sheet systematically overstates assets by
+      the entire unrealised margin. Standard practice is cost (or lower-of-cost-or-market).
+      Blocked on `Product.CostPrice` (§9.28).
+- [x] **No COGS, so `NetProfit` is not net profit.** P&L computes
+      `Revenue − Refunds − Expenses − DeliveryPayouts` and never subtracts what the goods cost.
+      Unless a business happens to log every purchase as a manual `Expense` in the same window
+      it sells in, the reported profit is inflated. Gross margin — the single number most
+      retailers actually manage on — cannot be produced at all.
+- [x] **No liabilities.** The balance sheet's own doc comment already admits it is partial. Tax
+      collected (§9.19), gift-card float (§9.24), and supplier payables all belong on a side of
+      the sheet that does not exist.
+- [ ] Also missing: multi-currency consolidation for a MultiBusiness tenant whose businesses
+      use different currencies (§9.38) — SuperOffice analytics currently sums raw decimals
+      across businesses regardless of their `Currency`, which is only correct by accident.
+
+### 9.32 BackOffice analytics
+
+**done (2026-08-16).** `GET .../analytics/dashboard` — revenue, gross profit, order count, delivered/cancelled counts, AOV, unique/repeat/new customers, repeat rate, pending returns, low-stock count, a daily sales series, top products and a status breakdown. Revenue is recognised on `Delivered` only, deliberately the same rule §9.8 and §9.16a use, so the three numbers can never quietly disagree. Admin-tier, following §9.3's financial-data rule.
+- [x] §9.8 built `GET /api/superoffice/analytics` for `TenantOwner` only. A `BusinessAdmin`
+      running a single storefront — the platform's most common user — has **no dashboard
+      endpoint at all**: no sales-over-time series, no order-status funnel, no
+      average-order-value, no repeat-customer rate, no conversion signals, no top-products for
+      their own business. They can list orders and add them up by hand.
+- [x] Most of it is the same aggregation `AnalyticsService` already performs, re-scoped from
+      "every business in the tenant" to "this business" and sliced by date. Cheap, high
+      perceived value, and it removes the §9.9 asymmetry where BackOffice cannot even see its
+      own plan usage.
+
+### 9.33 Invoices & receipts
+
+**done (2026-08-16), data only — no PDF.** `GET .../orders/{id}/invoice` assigns a gapless sequential number on first call via an **atomic** counter on the Business (two staff opening the same order cannot be handed the same number), then returns the same one forever. Carries seller legal identity, tax registration, both addresses, line items, discounts, tax label and amount, and paid/due. Rendering it as a PDF is left to the frontends — the data is the part that was missing. Packing slips and credit notes are still unbuilt.
+- [ ] No invoice number (distinct from `OrderNumber`, and in many jurisdictions required to be
+      gapless and sequential), no printable/PDF receipt, no tax invoice, no packing slip, no
+      credit note for refunds. The order confirmation "email" is a log line (§9.10).
+- [x] Depends on §9.19 for tax lines and §9.28/§9.30 for the seller identity details that must
+      legally appear on the document.
+
+### 9.34 Account verification — close the dead `PendingVerification` path
+
+**done (2026-08-16) — the dead enum path is closed.** `EmailVerificationToken` (hashed, 3-day expiry, single-use, prior tokens retired on resend), `AppUser.EmailVerifiedAt`, `POST /api/auth/verify-email` and `POST /api/auth/resend-verification`. **`Auth:RequireEmailVerification` defaults to `false`, and that is a compromise, not an oversight:** the only `INotificationService` implementation logs instead of sending (§9.10), so defaulting it on would lock every new customer out of every shop until an operator read the server log. Turn it on in the same change that wires a real provider. Phone/OTP verification is still unbuilt — `PhoneVerifiedAt` exists as the field for it.
+- [x] `UserStatus.PendingVerification` is the enum's default value and **nothing in the system
+      ever produces it**: `AuthService.RegisterCustomerAsync`, `UserService.CreateStaffAsync`
+      and `TenantService.SignupAsync` all explicitly set `Status = UserStatus.Active`, and
+      `AuthService` rejects any non-`Active` user at login. So the state is unreachable, and
+      every account — customer, staff, tenant owner — is created fully active with an
+      unverified email address.
+- [x] Consequences: signup spam with throwaway addresses, orders that cannot be contacted, and
+      a password-reset flow (§9.10) whose entire security rests on an email nobody proved they
+      own.
+- [x] The infrastructure is already there — `PasswordResetToken` is exactly the right shape
+      (hashed, expiring, single-use) to copy for a verification token, and `INotificationService`
+      is the send path. This is a small, high-value item that mostly reuses §9.10's work.
+- [ ] Phone/OTP verification is the same shape and matters more than email in the Bangladesh
+      market this project's lineage points at; decide which is primary rather than building both.
+
+### 9.35 Audit log & soft delete
+
+**done (2026-08-16).** Soft delete is now platform-wide: `BaseEntity.IsDeleted`/`DeletedAt`/`DeletedByUserId`, with the filter applied inside `MongoRepository` so no Application-layer caller has to remember it, and `HardDeleteAsync` kept for tokens and idempotency records. Product/Category deletes retire their slug first so the name stays reusable past the unique index. The audit trail is written by one global `AuditLogFilter` rather than per-service calls — **a deliberate trade-off**: entries are HTTP-shaped (who, route, method, status, resource id, duration), not domain-shaped (before/after values), but a single interception point cannot be forgotten when a new endpoint is added, which is exactly how audit trails rot. Readable at `GET .../audit-log`, Admin-tier only. Login history / active-session listing is still unbuilt.
+- [x] **Hard deletes everywhere.** `IMongoRepository.DeleteAsync` removes the document;
+      `BaseEntity` has no `IsDeleted`/`DeletedAt`. Deleting a Product destroys the row that
+      `StockMovement.ProductId` and inventory valuation point at — historical stock movements
+      become orphans referencing an ID that no longer resolves. (Orders survive this by design:
+      `OrderItem` snapshots name and price. Nothing else does.)
+- [x] **No audit trail for anything but order status.** `StatusHistory`/`PaymentStatusHistory`
+      are the only who-changed-what records in the system, and neither stores *who*. There is
+      no record of who deleted a product, changed a price, edited an expense, blocked a
+      customer, or altered a coupon — in a multi-staff BackOffice handling money, that is both
+      an operational and a dispute-resolution gap.
+- [ ] Also missing: an admin-visible login history / active-session list (`RefreshToken` has
+      the data; nothing surfaces it) and per-business action log retention.
+
+### 9.36 Lifecycle & marketing notifications
+
+**done (2026-08-16).** `LifecycleNotificationService` sweeps abandoned carts, back-in-stock (via §9.26's wishlist), merchant low-stock alerts (closing the push §9.15b deferred) and post-delivery review requests, driven by an in-process `LifecycleNotificationWorker` (`Notifications:SweepIntervalMinutes`, 0 disables). Every sweep is idempotent on an "already notified" marker, so two instances running it send nothing twice. **`NotificationPreferences` was built before the sender, on purpose** — marketing mail honours per-channel consent, `MarketingConsentAt` records when opt-in happened, and `POST /api/auth/unsubscribe/{token}` works without a login. A guest cart has no recorded consent and is therefore treated as *not* opted in.
+- [x] `INotificationService` fires on order confirmation and status change only. Absent, and
+      all standard: abandoned-cart recovery (the highest-ROI automated email in e-commerce —
+      `Cart` already persists with an `UpdatedAt`, so the query is trivial), back-in-stock
+      alerts (needs §9.26's wishlist), low-stock alerts *to the merchant* (§9.15b explicitly
+      deferred the push and left the signal query-only), review requests after delivery,
+      shipping/tracking updates, and post-purchase follow-ups.
+- [x] **No notification preferences and no unsubscribe.** The moment a real provider replaces
+      `LoggingNotificationService`, sending marketing mail with no opt-out is a legal problem
+      (CAN-SPAM / GDPR), not just a rude one. Build the preference model *before* the provider,
+      not after.
+
+### 9.37 Privacy & data rights
+
+**done (2026-08-16).** Customer data export, right-to-erasure by **anonymisation in place** (PII overwritten, the document kept — orders reference the id and the merchant has its own duty to retain them), notification preferences with consent timestamps, token-based unsubscribe, and a tenant-wide export for offboarding that strips password hashes even from the owner's own copy. **Still open:** cookie-consent surfaces (frontend), a written PII retention policy, and the PCI-scope decision, which should be recorded before §9.6 picks a gateway.
+- [ ] No data export ("download my data"), no account deletion or anonymisation, no consent
+      capture, no PII retention policy, no cookie-consent surface for the storefronts. The
+      platform stores customer names, emails, phones and full shipping addresses across
+      unrelated tenants.
+- [x] Tenant offboarding has the same hole from the other direction: `TenantStatus` can be
+      changed, but there is no "export everything and delete this tenant" path — so a
+      subscriber who cancels cannot get their data out or have it removed. For a platform
+      *sold as a subscription*, that is a contractual exposure, not just a feature gap.
+- [ ] Payment-data handling rules (PCI scope) need deciding *before* §9.6 picks a gateway —
+      the answer should be "we never touch card data, the gateway does", but it should be a
+      recorded decision.
+
+### 9.38 Multi-currency & localization
+
+**partially done (2026-08-16).** `Order.Currency` is snapshotted at checkout and every `LedgerEntry` written for an order takes its currency from that snapshot — so changing a Business's currency can no longer retroactively reinterpret closed history. That was the one-field fix flagged as not needing to wait. **Everything else is still open:** no FX rates, no per-currency pricing, no multi-language product content, no RTL handling. SuperOffice analytics still sums raw decimals across businesses regardless of currency (§9.31).
+- [x] `Business.Currency` is a display label and nothing more: no FX rates, no per-currency
+      pricing, and `Order` **does not snapshot the currency at all** — a business that changes
+      its `Currency` field retroactively reinterprets every historical order and every
+      `LedgerEntry` written before the change. `LedgerEntry` does carry a `Currency`; `Order`
+      does not. Snapshotting currency onto `Order` is a one-field fix and should not wait for
+      the rest of this item.
+- [ ] No multi-language product content, no RTL consideration, no per-locale formatting. The
+      platform's obvious first market is bilingual (Bangla/English) and the catalog is
+      single-string-per-field.
+
+### 9.39 Tenant-facing webhooks & public API keys
+
+**done (2026-08-16).** Outbound webhooks with HMAC-SHA256 signatures, HTTPS-only endpoints, per-delivery audit rows a tenant can debug against, and auto-disable after 10 consecutive failures. Six event names published from real domain transitions. `ApiKey` gives server-to-server credentials with a public key id + hashed secret, coarse read/write scopes, expiry and revocation, compared in fixed time. **Note:** `IApiKeyService.AuthenticateAsync` exists and is tested, but no authentication *handler* is wired into the pipeline yet — API keys can be issued and validated, not yet used to authenticate a request. That is the remaining step.
+- [x] No way for a subscriber to integrate anything: no outbound webhooks (`order.created`,
+      `order.delivered`, `product.low_stock`), no per-tenant API keys for server-to-server
+      access (the only credential is a 30-minute user JWT), no scoped tokens, no public API
+      documentation beyond Swagger.
+- [x] This is what turns Vastora from a closed product into a platform, and it is the usual
+      justification for the top pricing tier. It also unblocks the tenant's own automations —
+      accounting exports, ERP sync, Meta/Google catalog feeds — without Vastora building each
+      integration itself.
+
+### 9.40 Production readiness
+
+**partially done (2026-08-16).** Landed: a multi-stage non-root `Dockerfile` with a real health check, a GitHub Actions CI workflow (build with `-warnaserror`, test, docker build), per-endpoint rate limiting on the credential routes (10/min vs the global 100/min), and the query-path indexes from §9.18. **Still open, and each needs a decision rather than more code:** cloud file storage (the `IFileStorageService` seam is ready, the provider is not chosen), image processing/CDN, integration tests (still blocked on Docker in this environment), a deployment target and registry push, backup/restore and DR drills, a real secret store plus rotating the Atlas connection string in `.env`, and APM/error tracking/uptime alerting. CORS remains open by default — the lever exists, nothing pulls it.
+Consolidates the infrastructure gaps already scattered through §7's "Deliberate
+simplifications" plus what the audit added, so there is one checklist to clear before real
+traffic:
+- [ ] **Cloud file storage.** `LocalFileStorageService` writes to local disk — product images
+      do not survive a redeploy on most PaaS hosts and cannot be shared across instances. The
+      `IFileStorageService` seam exists precisely so S3/Azure Blob/Cloudinary is a swap; make
+      the swap before the first real catalog is uploaded, not after it is lost.
+- [ ] **No image processing** — no resizing, thumbnails, WebP conversion or CDN. Storefront
+      page weight is a conversion and SEO factor; today the browser downloads whatever the
+      merchant uploaded, at full size, from the app server.
+- [ ] **CORS is still open by default** (`Cors:AllowedOrigins` unset ⇒ `AllowAnyOrigin`). Set it.
+- [x] **Rate limiting is global, not per-tenant or per-endpoint.** 100 req/min per IP protects
+      the process, but one tenant's traffic spike degrades every other tenant, and login/
+      password-reset get the same budget as catalog reads. Per-endpoint limits on the auth
+      routes are the minimum.
+- [ ] **Integration tests** — §9.12's remaining item; still blocked on Docker for
+      Testcontainers. §9.17's transaction work in particular cannot be trusted without a real
+      MongoDB to run it against.
+- [ ] **No CI/CD pipeline, no staging environment, no deployment target chosen, no
+      containerisation** — there is no `Dockerfile` and no workflow file in the repo.
+- [ ] **No backup/restore or disaster-recovery procedure** for a database holding many
+      unrelated businesses' commercial records, and no documented restore drill.
+- [ ] **Secrets are in `.env`.** Fine locally; production needs a real secret store, and the
+      Atlas connection string currently committed to the developer's `.env` (§6) should be
+      rotated before launch.
+- [ ] **No APM / error tracking / uptime alerting.** Serilog logs to console only (§9.11) — in
+      production that means nobody finds out about an outage from the system itself.
+
 ---
 
 ## 10. Progress Log
 
 Newest entry first. Keep entries short — what happened and why, not a diff.
+
+### 2026-08-16 — §9B implemented: 55 of 77 commerce-completeness items, verified end to end
+Asked to implement the rest of the roadmap and update the frontend blueprints. Did §9.17 through
+§9.40 in one session. Per-section detail lives in each §9.x status line above — this entry is the
+narrative and the honesty ledger.
+
+**The four defects the audit found are fixed, and each has a regression test.**
+- **Checkout is atomic now** (§9.17). Validate-all-first, then guarded atomic `$inc` per line via
+  a new `IProductStockStore`, then compensating rollback if anything fails after stock moved.
+  Verified live: a two-line cart whose second line was short left the first line's stock exactly
+  where it started, with no order written. Idempotency-Key replay verified too — same order
+  number back, stock unchanged.
+- **Inventory is valued at cost** (§9.31). `Product.CostPrice` added, `UnitCost` snapshotted onto
+  every `OrderItem`, COGS written as its own ledger line at delivery, and the balance sheet given
+  a liabilities side. Verified live: a 225.00 order produced revenue 205.00, COGS 120.00, gross
+  profit 85.00 at 41.46%, tax 20.00 carried as a liability, assets 585.00 at cost against 800.00
+  at retail — arithmetic checked by hand.
+- **`PendingVerification` is reachable** (§9.34), behind `Auth:RequireEmailVerification`, which
+  defaults **off** because the only notification implementation still logs instead of sending.
+- **Pagination exists** (§9.18), with the compound indexes the paged reads need.
+
+**Two bugs found by actually running it, not by the compiler.** `UpdateBusinessRequest` never
+carried the new tax/invoicing settings, so a 200 response was silently discarding them; and the
+idempotency filter tried to hash the action's `CancellationToken`, which 500s on every request
+carrying the header. Both fixed and re-verified. This is the argument for smoke-testing over
+trusting a green build.
+
+**What was not done, and why.** 22 items stay unchecked. Most need a vendor or product decision
+rather than code — gateway, email provider, cloud storage, CDN, deployment target, secret store,
+APM. Integration tests are still blocked on Docker. The rest were scoped down deliberately: Atlas
+Search, per-product price lists, partial shipment, PDF rendering, loyalty points, product Q&A,
+multi-language content, custom-domain routing. One is a genuine half-step and is flagged as such:
+§9.39 issues and validates API keys but no authentication handler consumes them yet.
+
+**Also deliberate:** compensating rollback rather than MongoDB transactions in checkout (sessions
+would have to thread through every repository call — the trade-off is documented at the call
+site), and an HTTP-shaped audit log written by one global filter rather than domain-shaped
+before/after values written per service (a single interception point cannot be forgotten when a
+new endpoint is added).
+
+Tests went 37 → 78, all passing. `dotnet build` is clean. The API was run against the live Atlas
+database and the whole path — tenant signup, tax config, cost-priced product, guest cart,
+promotion, preview, checkout, idempotent replay, delivery, P&L, invoice, dashboard, balance
+sheet, guest lookup, RMA with restock-on-receipt, review, wishlist — was exercised with curl.
+All three frontend blueprints were updated in the same session, per the rule at the top of this
+file: the paged-envelope and catalog-query changes are breaking, and the docs would have drifted
+immediately otherwise.
+
+### 2026-08-16 — Commerce-completeness audit: §9.17–§9.40 added to the roadmap
+No code written. Asked to research what the project lacks as a *best-in-class* e-commerce
+application and record it as todos. Audited the existing code against what mature commerce APIs
+(Medusa, Saleor, commercetools, Shopify) treat as core, and added 24 new roadmap sections.
+
+Every claim in them was checked against the source, not assumed from this document — which is
+how the four items worth calling out here were found, all of them defects rather than missing
+features:
+- **Checkout is not atomic** (§9.17). `CheckoutAsync` decrements stock inside the item loop,
+  before the order is written, with no transaction and no rollback — a mid-loop failure leaves
+  earlier items permanently deducted. Same method also has a read-then-write oversell race and
+  no idempotency key.
+- **Inventory is valued at retail price** (§9.31). `GetValuationAsync` uses `p.Price`, and that
+  number is the balance sheet's `TotalAssets` — so the balance sheet overstates assets by the
+  full unrealised margin. There is no `CostPrice` field to fix it with, and consequently no COGS
+  in the P&L, so `NetProfit` isn't net profit.
+- **`UserStatus.PendingVerification` is unreachable** (§9.34). It's the enum default, but all
+  three account-creation paths explicitly set `Active`. Nobody's email is ever verified,
+  including the address the password-reset flow trusts.
+- **No pagination exists anywhere** (§9.18). `IMongoRepository<T>` has no skip/take/sort at all,
+  so every list endpoint returns the whole collection and sorts it in memory.
+
+The rest are genuine absences with no code to blame: tax, returns/RMA and partial refunds,
+shipping zones and carrier tracking, variant-aware cart/order, a promotions engine beyond a
+single coupon code, gift cards, reviews, wishlist, guest checkout, product cost/SEO/weight
+fields and bulk import, faceted search, storefront CMS, BackOffice analytics, invoices, audit
+log and soft delete, lifecycle notifications, privacy/data-rights, multi-currency, tenant
+webhooks, and a production-readiness checklist that consolidates the infrastructure gaps §7
+had scattered across its "deliberate simplifications" list.
+
+Deliberately *not* done in this session: reordering or renumbering §9.1–§9.16, and any attempt
+to estimate the new items. The suggested order in the audit note is a recommendation about
+severity, not a schedule.
 
 ### 2026-08-15 — Roadmap §9.3–§9.16: the rest of the backend roadmap in one session
 Asked to work through every remaining roadmap module in order; did §9.3 through §9.16 (skipping

@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Vastora.Application.Common;
 using Vastora.Application.Common.Interfaces;
 using Vastora.Application.Inventory;
 using Vastora.Application.Products;
@@ -16,9 +17,10 @@ public class InventoryController(ICurrentUserContext currentUser, IInventoryServ
     : VastoraControllerBase(currentUser)
 {
     [HttpGet("products/{productId}/stock-movements")]
-    public async Task<ActionResult<List<StockMovementResponse>>> GetMovements(string businessId, string productId, CancellationToken ct)
+    public async Task<ActionResult<PagedResult<StockMovementResponse>>> GetMovements(
+        string businessId, string productId, [FromQuery] int page = 1, [FromQuery] int pageSize = 50, CancellationToken ct = default)
     {
-        var result = await inventoryService.GetMovementsForProductAsync(businessId, productId, ct);
+        var result = await inventoryService.GetMovementsForProductAsync(businessId, productId, PageRequest.Of(page, pageSize), ct);
         return Ok(result);
     }
 
