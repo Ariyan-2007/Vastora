@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main, development]
+  pull_request:
+    branches: [main, development]
+
+jobs:
+  build-and-test:
+    name: Build & test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore
+        run: dotnet restore
+
+      # Warnings-as-errors here rather than in the .csproj files, so a local build stays fast to
+      # iterate on while CI still refuses to let warnings accumulate.
+      - name: Build
+        run: dotnet build --no-restore -c Release -warnaserror
+
+      - name: Test
+        run: dotnet test --no-build -c Release --verbosity normal
+
+  docker:
+    name: Docker image builds
+    runs-on: ubuntu-latest
+    needs: build-and-test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Build only — no registry push is configured, because no deployment target has been chosen
+      # yet (§9.40). This proves the Dockerfile still works; wiring a push is a one-step change
+      # once there is somewhere to push to.
+      - name: Build image
+        run: docker build -t vastora-api:${{ github.sha }} .

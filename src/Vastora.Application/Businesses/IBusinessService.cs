@@ -20,6 +20,11 @@ public interface IBusinessService
 
     Task<BusinessResponse> UpdateAsync(string tenantId, string businessId, UpdateBusinessRequest request, CancellationToken ct = default);
 
+    /// <summary>Sets LogoUrl/BannerUrl only, so an upload doesn't force the caller to resend the whole Business (mirrors ProductService.AddImageAsync).</summary>
+    Task<BusinessResponse> SetLogoAsync(string tenantId, string businessId, string logoUrl, CancellationToken ct = default);
+
+    Task<BusinessResponse> SetBannerAsync(string tenantId, string businessId, string bannerUrl, CancellationToken ct = default);
+
     Task<BusinessResponse> UpdateStatusAsync(string tenantId, string businessId, BusinessStatus status, CancellationToken ct = default);
 
     /// <summary>Toggles whether this Business uses the DeliveryAgent workflow — see Business.DeliveryModuleEnabled.</summary>

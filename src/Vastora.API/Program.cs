@@ -10,6 +10,7 @@ using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi;
 using Serilog;
 using Vastora.API.Authorization;
+using Vastora.API.BackgroundJobs;
 using Vastora.API.Filters;
 using Vastora.API.Middleware;
 using Vastora.Application;
@@ -56,6 +57,11 @@ builder.Services.AddControllers(options =>
         // Auto-runs the registered FluentValidation IValidator<T> (if any) for every action
         // argument before the action body executes — see ValidationActionFilter for the "why".
         options.Filters.Add<ValidationActionFilter>();
+
+        // §9.35 — records every mutating request centrally, so a new endpoint can't be added
+        // without an audit trail. Ordered after validation so rejected requests aren't logged
+        // as if they had done something.
+        options.Filters.Add<AuditLogFilter>();
     })
     .AddJsonOptions(options =>
     {
@@ -147,19 +153,47 @@ builder.Services.AddCors(options =>
 
 // A generous global limit (§9.11) — this is abuse protection, not a business-tier throttle;
 // SubscriptionPlanLimits (§9.9) already governs the things that actually matter per plan.
+//
+// §9.40 narrows it in one place that needed it: the auth routes. Login, registration, password
+// reset and email verification are credential-guessing surfaces, and giving them the same 100/min
+// budget as catalog browsing meant an attacker got 100 password attempts a minute per IP.
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
     options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(httpContext =>
-        RateLimitPartition.GetFixedWindowLimiter(
-            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
-            factory: _ => new FixedWindowRateLimiterOptions
-            {
-                PermitLimit = 100,
-                Window = TimeSpan.FromMinutes(1),
-                QueueLimit = 0
-            }));
+    {
+        var clientIp = httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        var path = httpContext.Request.Path.Value ?? string.Empty;
+
+        var isCredentialEndpoint =
+            path.Contains("/auth/login", StringComparison.OrdinalIgnoreCase)
+            || path.Contains("/auth/register", StringComparison.OrdinalIgnoreCase)
+            || path.Contains("/auth/forgot-password", StringComparison.OrdinalIgnoreCase)
+            || path.Contains("/auth/reset-password", StringComparison.OrdinalIgnoreCase)
+            || path.Contains("/auth/verify-email", StringComparison.OrdinalIgnoreCase);
+
+        return isCredentialEndpoint
+            ? RateLimitPartition.GetFixedWindowLimiter(
+                partitionKey: $"auth:{clientIp}",
+                factory: _ => new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = 10,
+                    Window = TimeSpan.FromMinutes(1),
+                    QueueLimit = 0
+                })
+            : RateLimitPartition.GetFixedWindowLimiter(
+                partitionKey: clientIp,
+                factory: _ => new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = 100,
+                    Window = TimeSpan.FromMinutes(1),
+                    QueueLimit = 0
+                });
+    });
 });
+
+// §9.36 — abandoned-cart, back-in-stock, low-stock and review-request sweeps.
+builder.Services.AddHostedService<LifecycleNotificationWorker>();
 
 builder.Services.AddHealthChecks()
     .AddCheck<MongoHealthCheck>("mongodb");
@@ -184,6 +218,13 @@ app.UseCors(CorsPolicy);
 app.UseRateLimiter();
 
 app.MapHealthChecks("/health");
+
+// Platform console (VASTORA_BLUEPRINT.md's "Platform console — not yet built as UI") — a static,
+// no-build-step page at /platform that drives PlatformController. The page itself has no server-side
+// gate (same as any login screen); every action it takes still goes through the normal JWT + the
+// [Authorize(Roles = PlatformSuperAdmin)] check on the API, so serving the HTML publicly is safe.
+app.UseDefaultFiles();
+app.UseStaticFiles();
 
 // Serves whatever LocalFileStorageService wrote (§9.5, product image uploads) — physical path
 // must match LocalFileStorageService's UploadsRoot exactly. Public, no auth: product images are

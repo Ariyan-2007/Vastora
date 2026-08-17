@@ -87,8 +87,59 @@ public class BusinessService(
         business.ContactPhone = request.ContactPhone;
         business.Currency = request.Currency;
         business.DefaultDeliveryFee = request.DefaultDeliveryFee;
-        business.UpdatedAt = DateTime.UtcNow;
 
+        // §9B settings are patch-style: a caller that omits a section leaves it as it was, so the
+        // pre-§9B request body keeps working and a partial update can't silently reset tax config.
+        if (request.Tax is not null)
+        {
+            business.Tax = request.Tax;
+        }
+
+        if (request.Invoicing is not null)
+        {
+            // LastNumber is the invoice sequence counter (§9.33) and must never be settable from
+            // a request — rewinding it would issue duplicate invoice numbers.
+            business.Invoicing = request.Invoicing with { LastNumber = business.Invoicing.LastNumber };
+        }
+
+        if (request.ReturnWindowDays is { } returnWindow)
+        {
+            business.ReturnWindowDays = returnWindow;
+        }
+
+        if (request.ReviewsEnabled is { } reviewsEnabled)
+        {
+            business.ReviewsEnabled = reviewsEnabled;
+        }
+
+        if (request.AutoPublishReviews is { } autoPublish)
+        {
+            business.AutoPublishReviews = autoPublish;
+        }
+
+        if (request.GuestCheckoutEnabled is { } guestCheckout)
+        {
+            business.GuestCheckoutEnabled = guestCheckout;
+        }
+
+        await businesses.UpdateAsync(business, ct);
+        return Map(business);
+    }
+
+    public async Task<BusinessResponse> SetLogoAsync(string tenantId, string businessId, string logoUrl, CancellationToken ct = default)
+    {
+        var business = await GetScopedAsync(tenantId, businessId, ct);
+        business.LogoUrl = logoUrl;
+        business.UpdatedAt = DateTime.UtcNow;
+        await businesses.UpdateAsync(business, ct);
+        return Map(business);
+    }
+
+    public async Task<BusinessResponse> SetBannerAsync(string tenantId, string businessId, string bannerUrl, CancellationToken ct = default)
+    {
+        var business = await GetScopedAsync(tenantId, businessId, ct);
+        business.BannerUrl = bannerUrl;
+        business.UpdatedAt = DateTime.UtcNow;
         await businesses.UpdateAsync(business, ct);
         return Map(business);
     }
@@ -142,5 +193,6 @@ public class BusinessService(
     private static BusinessResponse Map(Business b) => new(
         b.Id, b.TenantId, b.Name, b.Slug, b.CustomDomain, b.Description, b.LogoUrl, b.BannerUrl,
         b.ThemeColor, b.Currency, b.ContactEmail, b.ContactPhone, b.Status, b.DeliveryModuleEnabled,
-        b.DefaultDeliveryFee, b.CreatedAt);
+        b.DefaultDeliveryFee, b.CreatedAt,
+        b.Tax, b.ReturnWindowDays, b.ReviewsEnabled, b.GuestCheckoutEnabled);
 }

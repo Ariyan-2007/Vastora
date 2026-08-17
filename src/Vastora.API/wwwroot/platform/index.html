@@ -1,0 +1,789 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Vastora Platform Console</title>
+<meta name="robots" content="noindex, nofollow">
+<style>
+  :root {
+    --bg: #0f1216;
+    --panel: #171b21;
+    --panel-2: #1e232b;
+    --border: #2a303a;
+    --text: #e6e9ee;
+    --text-dim: #8b94a3;
+    --accent: #5b8cff;
+    --accent-dim: #2a3b66;
+    --ok: #3ecf8e;
+    --warn: #e3b341;
+    --err: #f0665f;
+    --radius: 8px;
+  }
+  * { box-sizing: border-box; min-width: 0; }
+  html, body { max-width: 100%; overflow-x: hidden; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 14px;
+  }
+  a { color: var(--accent); }
+
+  /* Login screen */
+  #loginScreen {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+  }
+  .login-card {
+    width: 360px;
+    max-width: 100%;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 28px;
+  }
+  .login-card h1 {
+    font-size: 18px;
+    margin: 0 0 4px;
+  }
+  .login-card p.sub {
+    color: var(--text-dim);
+    margin: 0 0 20px;
+    font-size: 12.5px;
+  }
+  label {
+    display: block;
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-bottom: 6px;
+  }
+  input, select {
+    width: 100%;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 9px 10px;
+    color: var(--text);
+    font-size: 13.5px;
+    margin-bottom: 14px;
+  }
+  input:focus, select:focus { outline: 1px solid var(--accent); }
+  button {
+    cursor: pointer;
+    border: none;
+    border-radius: 6px;
+    padding: 9px 14px;
+    font-size: 13.5px;
+    font-weight: 600;
+    background: var(--accent);
+    color: white;
+  }
+  button.secondary {
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    font-weight: 500;
+  }
+  button.danger { background: var(--err); }
+  button:disabled { opacity: 0.5; cursor: default; }
+  button.full { width: 100%; }
+
+  /* App shell */
+  #app { display: none; min-height: 100vh; flex-direction: column; }
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 22px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+  }
+  header .title { font-weight: 700; font-size: 15px; }
+  header .title .badge {
+    font-size: 10.5px;
+    font-weight: 700;
+    color: var(--accent);
+    background: var(--accent-dim);
+    padding: 2px 7px;
+    border-radius: 4px;
+    margin-left: 8px;
+    vertical-align: middle;
+  }
+  header .title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  header .who { color: var(--text-dim); font-size: 12.5px; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  header .right { display: flex; align-items: center; gap: 14px; flex-shrink: 0; }
+  header { flex-wrap: wrap; row-gap: 8px; }
+
+  main { flex: 1; padding: 22px; max-width: 1200px; width: 100%; margin: 0 auto; }
+  .toolbar { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; margin-bottom: 14px; gap: 10px; }
+  .toolbar input[type=text] { flex: 1 1 200px; max-width: 280px; margin: 0; }
+  .toolbar > div { display: flex; flex-wrap: wrap; gap: 10px; flex-shrink: 0; }
+
+  .panel-card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; margin-bottom: 18px; }
+  .panel-card h3 { font-size: 14.5px; }
+  .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0 16px; }
+
+  .table-wrap { width: 100%; overflow-x: auto; border-radius: var(--radius); }
+  table { width: 100%; min-width: 720px; border-collapse: collapse; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: 13px; white-space: nowrap; }
+  th { color: var(--text-dim); font-weight: 600; font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.04em; background: var(--panel-2); }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: var(--panel-2); cursor: pointer; }
+
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 20px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; }
+  .pill.Active { background: rgba(62,207,142,0.15); color: var(--ok); }
+  .pill.PendingSetup, .pill.Draft { background: rgba(227,179,65,0.15); color: var(--warn); }
+  .pill.Suspended, .pill.Cancelled { background: rgba(240,102,95,0.15); color: var(--err); }
+
+  .business-row { border: 1px solid var(--border); border-radius: 6px; padding: 12px; margin-bottom: 10px; overflow-wrap: break-word; }
+  .business-row-top { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; }
+  .business-row-top .pill { flex-shrink: 0; }
+  .business-row-slug { color: var(--text-dim); font-size: 12px; margin-top: 2px; overflow-wrap: break-word; }
+  .danger-zone { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border); }
+  button.danger.ghost { background: none; color: var(--err); border: 1px solid rgba(240,102,95,0.4); font-weight: 500; padding: 6px 10px; font-size: 12.5px; }
+  .wipe-confirm { margin-top: 8px; background: rgba(240,102,95,0.08); border: 1px solid rgba(240,102,95,0.3); border-radius: 6px; padding: 10px; }
+  .wipe-confirm input { margin-bottom: 0; }
+
+  #toast { position: fixed; bottom: 20px; right: 20px; left: 20px; z-index: 999; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; pointer-events: none; }
+  .toast-item { max-width: 360px; pointer-events: auto; overflow-wrap: break-word; padding: 10px 14px; border-radius: 6px; font-size: 13px; background: var(--panel-2); border: 1px solid var(--border); box-shadow: 0 4px 14px rgba(0,0,0,0.3); }
+  .toast-item.ok { border-color: var(--ok); }
+  .toast-item.err { border-color: var(--err); }
+
+  /* Drawer */
+  #overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 50; }
+  #drawer {
+    position: fixed; top: 0; right: 0; bottom: 0; width: 420px; max-width: 92vw;
+    background: var(--panel); border-left: 1px solid var(--border); z-index: 51;
+    transform: translateX(100%); transition: transform 0.18s ease; overflow-y: auto;
+  }
+  #drawer.open { transform: translateX(0); }
+  #overlay.open { display: block; }
+  .drawer-header { display: flex; gap: 10px; justify-content: space-between; align-items: flex-start; padding: 18px 20px; border-bottom: 1px solid var(--border); }
+  .drawer-header h2 { margin: 0 0 4px; font-size: 16px; overflow-wrap: break-word; }
+  .drawer-header .slug { color: var(--text-dim); font-size: 12px; overflow-wrap: break-word; }
+  .drawer-header .close-btn { flex-shrink: 0; }
+  .drawer-body { padding: 18px 20px; overflow-wrap: break-word; }
+  .field-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; margin-bottom: 4px; }
+  .field-row select, .field-row input { margin-bottom: 0; flex: 1 1 140px; }
+  .field-row button { flex-shrink: 0; white-space: nowrap; }
+  .section { margin-bottom: 22px; }
+  .section h3 { font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-dim); margin: 0 0 10px; }
+  .kv { display: grid; grid-template-columns: 110px 1fr; gap: 6px 10px; font-size: 13px; margin-bottom: 4px; }
+  .kv .k { color: var(--text-dim); }
+  .kv div { overflow-wrap: break-word; }
+  .close-btn { background: none; color: var(--text-dim); font-size: 18px; padding: 2px 6px; }
+  .usage-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+  .usage-row:last-child { border-bottom: none; }
+  .usage-bar-track { background: var(--panel-2); border-radius: 4px; height: 5px; margin-top: 4px; overflow: hidden; }
+  .usage-bar-fill { background: var(--accent); height: 100%; }
+  .empty-state { text-align: center; color: var(--text-dim); padding: 60px 0; }
+  .error-text { color: var(--err); font-size: 12.5px; margin: -6px 0 12px; min-height: 1em; }
+  .hint { color: var(--text-dim); font-size: 11.5px; margin-top: -8px; margin-bottom: 14px; }
+</style>
+</head>
+<body>
+
+<div id="loginScreen">
+  <div class="login-card">
+    <h1>Vastora Platform Console</h1>
+    <p class="sub">PlatformSuperAdmin access only. Every other role will be rejected after sign-in.</p>
+    <form id="loginForm">
+      <label for="email">Email</label>
+      <input type="email" id="email" autocomplete="username" required>
+      <label for="password">Password</label>
+      <input type="password" id="password" autocomplete="current-password" required>
+      <div class="error-text" id="loginError"></div>
+      <button type="submit" class="full" id="loginBtn">Sign in</button>
+    </form>
+  </div>
+</div>
+
+<div id="app">
+  <header>
+    <div class="title">Vastora Platform Console<span class="badge">PlatformSuperAdmin</span></div>
+    <div class="right">
+      <span class="who" id="whoami"></span>
+      <button class="secondary" id="logoutBtn">Sign out</button>
+    </div>
+  </header>
+  <main>
+    <div class="toolbar">
+      <input type="text" id="search" placeholder="Filter by name or slug...">
+      <div style="display:flex;gap:10px;">
+        <button class="secondary" id="refreshBtn">Refresh</button>
+        <button id="newTenantToggle">+ New Tenant</button>
+      </div>
+    </div>
+    <div id="newTenantPanel" class="panel-card" style="display:none;">
+      <h3 style="margin-top:0;">Onboard a new Tenant</h3>
+      <p class="hint" style="margin-top:-4px;">Provisions the Tenant, its owner login, and a first Business in one call — the same thing the public signup page does, just triggered by you for a deal closed outside the product (sales call, signed contract).</p>
+      <div class="form-grid">
+        <div>
+          <label>Tenant name</label>
+          <input type="text" id="ntTenantName">
+          <label>Account shape</label>
+          <select id="ntTenantType">
+            <option value="SingleBusiness">Single Business</option>
+            <option value="MultiBusiness">Multi Business</option>
+          </select>
+        </div>
+        <div>
+          <label>Owner full name</label>
+          <input type="text" id="ntOwnerFullName">
+          <label>Owner email</label>
+          <input type="email" id="ntOwnerEmail">
+        </div>
+        <div>
+          <label>Owner phone</label>
+          <input type="text" id="ntOwnerPhone">
+          <label>Owner temporary password</label>
+          <input type="text" id="ntOwnerPassword" placeholder="Share this with the customer to hand off">
+        </div>
+        <div>
+          <label>Initial business name</label>
+          <input type="text" id="ntBusinessName">
+          <label>Initial business slug (optional)</label>
+          <input type="text" id="ntBusinessSlug" placeholder="Auto-generated from name if left blank">
+        </div>
+      </div>
+      <div class="error-text" id="newTenantError"></div>
+      <div style="display:flex;flex-wrap:wrap;gap:10px;">
+        <button id="newTenantSubmit">Create tenant</button>
+        <button class="secondary" id="newTenantCancel">Cancel</button>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th><th>Slug</th><th>Type</th><th>Status</th><th>Plan</th><th>Owner contact</th><th>Created</th>
+          </tr>
+        </thead>
+        <tbody id="tenantRows"></tbody>
+      </table>
+    </div>
+    <div class="empty-state" id="emptyState" style="display:none;">No tenants match.</div>
+  </main>
+</div>
+
+<div id="overlay"></div>
+<div id="drawer">
+  <div class="drawer-header">
+    <div>
+      <h2 id="drawerName">&nbsp;</h2>
+      <div class="slug" id="drawerSlug"></div>
+    </div>
+    <button class="close-btn" id="drawerClose">&times;</button>
+  </div>
+  <div class="drawer-body" id="drawerBody"></div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+(function () {
+  "use strict";
+
+  const STORAGE_KEY = "vastora_platform_session";
+  const el = (id) => document.getElementById(id);
+  const enumLabel = (v) => v.replace(/([a-z])([A-Z])/g, "$1 $2");
+
+  let session = null; // { accessToken, accessTokenExpiresAt, refreshToken, user }
+  let tenants = [];
+  let refreshInFlight = null;
+
+  // ---------- persistence ----------
+  function loadSession() {
+    try {
+      const raw = sessionStorage.getItem(STORAGE_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch { return null; }
+  }
+  function saveSession(s) {
+    session = s;
+    if (s) sessionStorage.setItem(STORAGE_KEY, JSON.stringify(s));
+    else sessionStorage.removeItem(STORAGE_KEY);
+  }
+
+  // ---------- toast ----------
+  function toast(message, kind) {
+    const t = document.createElement("div");
+    t.className = "toast-item " + (kind || "");
+    t.textContent = message;
+    el("toast").appendChild(t);
+    setTimeout(() => t.remove(), 4500);
+  }
+
+  // ---------- API layer ----------
+  async function rawFetch(path, options) {
+    options = options || {};
+    const headers = Object.assign({ "Content-Type": "application/json" }, options.headers || {});
+    if (session && session.accessToken) headers["Authorization"] = "Bearer " + session.accessToken;
+    const res = await fetch(path, Object.assign({}, options, { headers }));
+    return res;
+  }
+
+  async function doRefresh() {
+    if (!session || !session.refreshToken) throw new Error("no-session");
+    if (refreshInFlight) return refreshInFlight;
+    refreshInFlight = fetch("/api/auth/refresh", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refreshToken: session.refreshToken })
+    }).then(async (res) => {
+      if (!res.ok) throw new Error("refresh-failed");
+      const data = await res.json();
+      saveSession({
+        accessToken: data.accessToken,
+        accessTokenExpiresAt: data.accessTokenExpiresAt,
+        refreshToken: data.refreshToken,
+        user: data.user
+      });
+      return session;
+    }).finally(() => { refreshInFlight = null; });
+    return refreshInFlight;
+  }
+
+  // Authenticated call with one automatic refresh-and-retry on 401.
+  async function api(path, options) {
+    let res = await rawFetch(path, options);
+    if (res.status === 401) {
+      try {
+        await doRefresh();
+        res = await rawFetch(path, options);
+      } catch {
+        logout();
+        throw new Error("Session expired. Please sign in again.");
+      }
+    }
+    if (!res.ok) {
+      let message = res.status + " " + res.statusText;
+      try {
+        const body = await res.json();
+        if (body && body.errors) message = Object.values(body.errors).flat().join(" ");
+        else if (body && body.detail) message = body.detail;
+        else if (body && body.title) message = body.title;
+      } catch { /* body wasn't JSON */ }
+      throw new Error(message);
+    }
+    if (res.status === 204) return null;
+    return res.json();
+  }
+
+  // ---------- auth flows ----------
+  async function login(email, password) {
+    const res = await fetch("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password })
+    });
+    if (!res.ok) {
+      let message = "Sign-in failed.";
+      try {
+        const body = await res.json();
+        message = body.detail || body.title || message;
+      } catch { /* ignore */ }
+      throw new Error(message);
+    }
+    const data = await res.json();
+    if (data.user.role !== "PlatformSuperAdmin") {
+      throw new Error("This account is a " + enumLabel(data.user.role) + ", not a PlatformSuperAdmin. Access denied.");
+    }
+    saveSession({
+      accessToken: data.accessToken,
+      accessTokenExpiresAt: data.accessTokenExpiresAt,
+      refreshToken: data.refreshToken,
+      user: data.user
+    });
+  }
+
+  function logout() {
+    const s = session;
+    saveSession(null);
+    showLogin();
+    if (s && s.refreshToken) {
+      // best-effort, fire-and-forget — token is dead either way once cleared client-side
+      fetch("/api/auth/logout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refreshToken: s.refreshToken })
+      }).catch(() => {});
+    }
+  }
+
+  // ---------- rendering ----------
+  function showLogin() {
+    el("app").style.display = "none";
+    el("loginScreen").style.display = "flex";
+  }
+  function showApp() {
+    el("loginScreen").style.display = "none";
+    el("app").style.display = "flex";
+    el("whoami").textContent = session.user.fullName + " (" + session.user.email + ")";
+  }
+
+  function renderRows() {
+    const q = el("search").value.trim().toLowerCase();
+    const filtered = tenants.filter((t) =>
+      !q || t.name.toLowerCase().includes(q) || t.slug.toLowerCase().includes(q)
+    );
+    const tbody = el("tenantRows");
+    tbody.innerHTML = "";
+    filtered.forEach((t) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML =
+        "<td>" + escapeHtml(t.name) + "</td>" +
+        "<td>" + escapeHtml(t.slug) + "</td>" +
+        "<td>" + enumLabel(t.type) + "</td>" +
+        "<td><span class=\"pill " + t.status + "\">" + enumLabel(t.status) + "</span></td>" +
+        "<td>" + t.plan + "</td>" +
+        "<td>" + escapeHtml(t.contactEmail) + "</td>" +
+        "<td>" + new Date(t.createdAt).toLocaleDateString() + "</td>";
+      tr.addEventListener("click", () => openDrawer(t.id));
+      tbody.appendChild(tr);
+    });
+    el("emptyState").style.display = filtered.length ? "none" : "block";
+  }
+
+  function escapeHtml(s) {
+    const d = document.createElement("div");
+    d.textContent = s == null ? "" : String(s);
+    return d.innerHTML;
+  }
+
+  async function loadTenants() {
+    tenants = await api("/api/platform/tenants");
+    renderRows();
+  }
+
+  const STATUS_OPTIONS = ["PendingSetup", "Active", "Suspended", "Cancelled"];
+  const PLAN_OPTIONS = ["Trial", "Starter", "Growth", "Enterprise"];
+  const TYPE_OPTIONS = ["SingleBusiness", "MultiBusiness"];
+  const BUSINESS_STATUS_OPTIONS = ["Draft", "Active", "Suspended"];
+
+  function optionsHtml(options, current) {
+    return options.map((o) => "<option value=\"" + o + "\"" + (o === current ? " selected" : "") + ">" + enumLabel(o) + "</option>").join("");
+  }
+
+  async function openDrawer(tenantId) {
+    el("overlay").classList.add("open");
+    el("drawer").classList.add("open");
+    el("drawerName").textContent = "Loading...";
+    el("drawerSlug").textContent = "";
+    el("drawerBody").innerHTML = "";
+
+    let tenant, usage, tenantBusinesses;
+    try {
+      [tenant, usage, tenantBusinesses] = await Promise.all([
+        api("/api/platform/tenants/" + tenantId),
+        api("/api/platform/tenants/" + tenantId + "/usage"),
+        api("/api/platform/tenants/" + tenantId + "/businesses")
+      ]);
+    } catch (e) {
+      toast(e.message, "err");
+      closeDrawer();
+      return;
+    }
+
+    el("drawerName").textContent = tenant.name;
+    el("drawerSlug").textContent = tenant.slug + "  ·  " + tenant.id;
+
+    const businessRows = usage.businesses.map((b) => {
+      const staffPct = b.maxStaffPerBusiness ? Math.min(100, (b.staffCount / b.maxStaffPerBusiness) * 100) : 0;
+      const prodPct = b.maxProductsPerBusiness ? Math.min(100, (b.productCount / b.maxProductsPerBusiness) * 100) : 0;
+      return (
+        "<div class=\"usage-row\" style=\"flex-direction:column;align-items:stretch;\">" +
+          "<div style=\"display:flex;justify-content:space-between;margin-bottom:4px;\"><strong>" + escapeHtml(b.businessName) + "</strong></div>" +
+          "<div style=\"font-size:12px;color:var(--text-dim);\">Staff: " + b.staffCount + (b.maxStaffPerBusiness != null ? " / " + b.maxStaffPerBusiness : " (unlimited)") + "</div>" +
+          (b.maxStaffPerBusiness != null ? "<div class=\"usage-bar-track\"><div class=\"usage-bar-fill\" style=\"width:" + staffPct + "%\"></div></div>" : "") +
+          "<div style=\"font-size:12px;color:var(--text-dim);margin-top:6px;\">Products: " + b.productCount + (b.maxProductsPerBusiness != null ? " / " + b.maxProductsPerBusiness : " (unlimited)") + "</div>" +
+          (b.maxProductsPerBusiness != null ? "<div class=\"usage-bar-track\"><div class=\"usage-bar-fill\" style=\"width:" + prodPct + "%\"></div></div>" : "") +
+        "</div>"
+      );
+    }).join("");
+
+    el("drawerBody").innerHTML =
+      "<div class=\"section\">" +
+        "<h3>Details</h3>" +
+        "<div class=\"kv\"><div class=\"k\">Owner user</div><div>" + escapeHtml(tenant.ownerUserId) + "</div></div>" +
+        "<div class=\"kv\"><div class=\"k\">Contact</div><div>" + escapeHtml(tenant.contactEmail) + " · " + escapeHtml(tenant.contactPhone) + "</div></div>" +
+        "<div class=\"kv\"><div class=\"k\">Created</div><div>" + new Date(tenant.createdAt).toLocaleString() + "</div></div>" +
+      "</div>" +
+      "<div class=\"section\">" +
+        "<h3>Controls</h3>" +
+        "<label>Status</label>" +
+        "<div class=\"field-row\"><select id=\"statusSelect\">" + optionsHtml(STATUS_OPTIONS, tenant.status) + "</select><button data-action=\"status\">Save</button></div>" +
+        "<div style=\"height:12px;\"></div>" +
+        "<label>Plan</label>" +
+        "<div class=\"field-row\"><select id=\"planSelect\">" + optionsHtml(PLAN_OPTIONS, tenant.plan) + "</select><button data-action=\"plan\">Save</button></div>" +
+        "<div style=\"height:12px;\"></div>" +
+        "<label>Type</label>" +
+        "<div class=\"field-row\"><select id=\"typeSelect\">" + optionsHtml(TYPE_OPTIONS, tenant.type) + "</select><button data-action=\"type\">Save</button></div>" +
+        "<div class=\"hint\">Type change is Single↔MultiBusiness account-shape only — no self-serve flow exists yet.</div>" +
+      "</div>" +
+      "<div class=\"section\">" +
+        "<h3>Businesses</h3>" +
+        "<div id=\"businessList\">" + renderBusinessRows(tenantBusinesses) + "</div>" +
+        (tenantBusinesses.length === 0 ? "<div class=\"hint\">No businesses yet.</div>" : "") +
+        "<button class=\"secondary\" id=\"addBusinessToggle\">+ Add business</button>" +
+        "<div id=\"addBusinessForm\" style=\"display:none;margin-top:10px;\">" +
+          "<label>Name</label><input type=\"text\" id=\"newBizName\">" +
+          "<label>Slug (optional — auto-generated from name if left blank)</label><input type=\"text\" id=\"newBizSlug\">" +
+          "<label>Description</label><input type=\"text\" id=\"newBizDescription\">" +
+          "<label>Contact email</label><input type=\"email\" id=\"newBizEmail\">" +
+          "<label>Contact phone</label><input type=\"text\" id=\"newBizPhone\">" +
+          "<label>Currency</label><input type=\"text\" id=\"newBizCurrency\" value=\"USD\" maxlength=\"3\">" +
+          "<div class=\"error-text\" id=\"addBusinessError\"></div>" +
+          "<button id=\"addBusinessSubmit\">Create business</button>" +
+        "</div>" +
+      "</div>" +
+      "<div class=\"section\">" +
+        "<h3>Usage — " + usage.plan + " plan</h3>" +
+        "<div class=\"usage-row\"><span>Businesses</span><span>" + usage.businessCount + (usage.maxBusinesses != null ? " / " + usage.maxBusinesses : " (unlimited)") + "</span></div>" +
+        businessRows +
+      "</div>";
+
+    el("drawerBody").querySelectorAll("button[data-action]").forEach((btn) => {
+      btn.addEventListener("click", () => saveField(tenant.id, btn.getAttribute("data-action"), btn));
+    });
+
+    wireBusinessSection(tenant.id);
+  }
+
+  function renderBusinessRows(list) {
+    return list.map((b) => (
+      "<div class=\"business-row\">" +
+        "<div class=\"business-row-top\"><strong>" + escapeHtml(b.name) + "</strong><span class=\"pill " + b.status + "\">" + enumLabel(b.status) + "</span></div>" +
+        "<div class=\"business-row-slug\">" + escapeHtml(b.slug) + "</div>" +
+        "<div class=\"field-row\" style=\"margin-top:8px;\">" +
+          "<select data-status-select-for=\"" + b.id + "\">" + optionsHtml(BUSINESS_STATUS_OPTIONS, b.status) + "</select>" +
+          "<button data-status-save-for=\"" + b.id + "\">Save</button>" +
+        "</div>" +
+        "<div class=\"danger-zone\">" +
+          "<button class=\"danger ghost\" data-wipe-toggle-for=\"" + b.id + "\">Wipe this business&hellip;</button>" +
+          "<div class=\"wipe-confirm\" id=\"wipeConfirm-" + b.id + "\" style=\"display:none;\">" +
+            "<div class=\"hint\" style=\"margin:0 0 8px;\">Permanently removes " + escapeHtml(b.name) + " and every product, order, coupon, staff account, and customer under it. Type the slug <strong>" + escapeHtml(b.slug) + "</strong> to confirm.</div>" +
+            "<div class=\"field-row\">" +
+              "<input type=\"text\" id=\"wipeInput-" + b.id + "\" placeholder=\"" + escapeHtml(b.slug) + "\" data-expected-slug=\"" + escapeHtml(b.slug) + "\">" +
+              "<button class=\"danger\" id=\"wipeConfirmBtn-" + b.id + "\" disabled>Wipe permanently</button>" +
+            "</div>" +
+          "</div>" +
+        "</div>" +
+      "</div>"
+    )).join("");
+  }
+
+  function wireBusinessSection(tenantId) {
+    const toggle = el("addBusinessToggle");
+    if (toggle) {
+      toggle.addEventListener("click", () => {
+        const form = el("addBusinessForm");
+        form.style.display = form.style.display === "none" ? "block" : "none";
+      });
+    }
+
+    const submit = el("addBusinessSubmit");
+    if (submit) {
+      submit.addEventListener("click", () => createBusiness(tenantId, submit));
+    }
+
+    document.querySelectorAll("[data-status-save-for]").forEach((btn) => {
+      const businessId = btn.getAttribute("data-status-save-for");
+      btn.addEventListener("click", () => saveBusinessStatus(tenantId, businessId, btn));
+    });
+
+    document.querySelectorAll("[data-wipe-toggle-for]").forEach((btn) => {
+      const businessId = btn.getAttribute("data-wipe-toggle-for");
+      btn.addEventListener("click", () => {
+        const panel = el("wipeConfirm-" + businessId);
+        panel.style.display = panel.style.display === "none" ? "block" : "none";
+      });
+    });
+
+    document.querySelectorAll("[id^='wipeInput-']").forEach((input) => {
+      const businessId = input.id.replace("wipeInput-", "");
+      const confirmBtn = el("wipeConfirmBtn-" + businessId);
+      input.addEventListener("input", () => {
+        confirmBtn.disabled = input.value !== input.getAttribute("data-expected-slug");
+      });
+      confirmBtn.addEventListener("click", () => wipeBusiness(tenantId, businessId, input.value, confirmBtn));
+    });
+  }
+
+  async function createBusiness(tenantId, btn) {
+    el("addBusinessError").textContent = "";
+    btn.disabled = true;
+    try {
+      await api("/api/platform/tenants/" + tenantId + "/businesses", {
+        method: "POST",
+        body: JSON.stringify({
+          name: el("newBizName").value.trim(),
+          slug: el("newBizSlug").value.trim() || null,
+          description: el("newBizDescription").value.trim(),
+          contactEmail: el("newBizEmail").value.trim(),
+          contactPhone: el("newBizPhone").value.trim(),
+          currency: (el("newBizCurrency").value.trim() || "USD").toUpperCase()
+        })
+      });
+      toast("Business created.", "ok");
+      await loadTenants();
+      openDrawer(tenantId);
+    } catch (e) {
+      el("addBusinessError").textContent = e.message;
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function saveBusinessStatus(tenantId, businessId, btn) {
+    btn.disabled = true;
+    try {
+      const select = document.querySelector("[data-status-select-for='" + businessId + "']");
+      await api("/api/platform/tenants/" + tenantId + "/businesses/" + businessId + "/status", {
+        method: "PATCH",
+        body: JSON.stringify(select.value)
+      });
+      toast("Business status updated.", "ok");
+      await loadTenants();
+      openDrawer(tenantId);
+    } catch (e) {
+      toast(e.message, "err");
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function wipeBusiness(tenantId, businessId, confirmSlug, btn) {
+    btn.disabled = true;
+    try {
+      await api("/api/platform/tenants/" + tenantId + "/businesses/" + businessId + "/wipe", {
+        method: "POST",
+        body: JSON.stringify({ confirmSlug: confirmSlug })
+      });
+      toast("Business wiped.", "ok");
+      await loadTenants();
+      openDrawer(tenantId);
+    } catch (e) {
+      toast(e.message, "err");
+      btn.disabled = false;
+    }
+  }
+
+  async function saveField(tenantId, field, btn) {
+    btn.disabled = true;
+    try {
+      if (field === "status") {
+        const value = el("statusSelect").value;
+        await api("/api/platform/tenants/" + tenantId + "/status", { method: "PATCH", body: JSON.stringify({ status: value }) });
+      } else if (field === "plan") {
+        const value = el("planSelect").value;
+        await api("/api/platform/tenants/" + tenantId + "/plan", { method: "PATCH", body: JSON.stringify({ plan: value }) });
+      } else if (field === "type") {
+        const value = el("typeSelect").value;
+        await api("/api/platform/tenants/" + tenantId + "/type", { method: "PATCH", body: JSON.stringify({ type: value }) });
+      }
+      toast(enumLabel(field) + " updated.", "ok");
+      await loadTenants();
+      openDrawer(tenantId);
+    } catch (e) {
+      toast(e.message, "err");
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  function closeDrawer() {
+    el("overlay").classList.remove("open");
+    el("drawer").classList.remove("open");
+  }
+
+  // ---------- wiring ----------
+  el("loginForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    el("loginError").textContent = "";
+    el("loginBtn").disabled = true;
+    try {
+      await login(el("email").value.trim(), el("password").value);
+      showApp();
+      await loadTenants();
+    } catch (err) {
+      el("loginError").textContent = err.message;
+    } finally {
+      el("loginBtn").disabled = false;
+    }
+  });
+
+  el("logoutBtn").addEventListener("click", logout);
+  el("refreshBtn").addEventListener("click", () => loadTenants().catch((e) => toast(e.message, "err")));
+  el("search").addEventListener("input", renderRows);
+  el("overlay").addEventListener("click", closeDrawer);
+  el("drawerClose").addEventListener("click", closeDrawer);
+
+  el("newTenantToggle").addEventListener("click", () => {
+    el("newTenantPanel").style.display = "block";
+    el("newTenantToggle").disabled = true;
+  });
+  el("newTenantCancel").addEventListener("click", closeNewTenantPanel);
+  el("newTenantSubmit").addEventListener("click", createTenant);
+
+  function closeNewTenantPanel() {
+    el("newTenantPanel").style.display = "none";
+    el("newTenantToggle").disabled = false;
+    el("newTenantError").textContent = "";
+    ["ntTenantName", "ntOwnerFullName", "ntOwnerEmail", "ntOwnerPhone", "ntOwnerPassword", "ntBusinessName", "ntBusinessSlug"]
+      .forEach((id) => { el(id).value = ""; });
+    el("ntTenantType").value = "SingleBusiness";
+  }
+
+  async function createTenant() {
+    el("newTenantError").textContent = "";
+    const btn = el("newTenantSubmit");
+    btn.disabled = true;
+    try {
+      const result = await api("/api/platform/tenants", {
+        method: "POST",
+        body: JSON.stringify({
+          tenantName: el("ntTenantName").value.trim(),
+          tenantType: el("ntTenantType").value,
+          ownerFullName: el("ntOwnerFullName").value.trim(),
+          ownerEmail: el("ntOwnerEmail").value.trim(),
+          ownerPassword: el("ntOwnerPassword").value,
+          ownerPhone: el("ntOwnerPhone").value.trim(),
+          initialBusinessName: el("ntBusinessName").value.trim(),
+          initialBusinessSlug: el("ntBusinessSlug").value.trim() || null
+        })
+      });
+      toast("Tenant \"" + result.tenant.name + "\" created — owner can sign in with " + result.tenant.contactEmail + ".", "ok");
+      closeNewTenantPanel();
+      await loadTenants();
+    } catch (e) {
+      el("newTenantError").textContent = e.message;
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  // ---------- boot ----------
+  (async function boot() {
+    session = loadSession();
+    if (session && session.user) {
+      showApp();
+      try {
+        await loadTenants();
+      } catch (e) {
+        toast(e.message, "err");
+        showLogin();
+      }
+    } else {
+      showLogin();
+    }
+  })();
+})();
+</script>
+</body>
+</html>

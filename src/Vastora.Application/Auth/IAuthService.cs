@@ -23,4 +23,17 @@ public interface IAuthService
 
     /// <summary>Shared by every realm — the token itself identifies the account (§9.10).</summary>
     Task ResetPasswordAsync(string token, string newPassword, CancellationToken ct = default);
+
+    /// <summary>§9.34. Issues (or re-issues) an email verification token, retiring any outstanding one.</summary>
+    Task RequestEmailVerificationAsync(string userId, CancellationToken ct = default);
+
+    /// <summary>§9.34. Shared by every realm — the token identifies the account, same as password reset.</summary>
+    Task VerifyEmailAsync(string token, CancellationToken ct = default);
+
+    /// <summary>
+    /// Authenticated self-service change (current password required) — every realm, not just Shop.
+    /// Same "something changed" signal as a token-based reset: every active session is revoked,
+    /// forcing re-login everywhere including the device that made the change.
+    /// </summary>
+    Task ChangePasswordAsync(string userId, string currentPassword, string newPassword, CancellationToken ct = default);
 }

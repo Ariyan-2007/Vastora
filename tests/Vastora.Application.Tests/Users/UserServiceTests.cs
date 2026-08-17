@@ -78,6 +78,80 @@ public class UserServiceTests
                 new CreateStaffRequest("Cust", "c@b.com", "password123", "123", UserRole.Customer), CancellationToken.None));
     }
 
+    [Fact]
+    public async Task AddAddressAsync_FirstAddress_IsDefaultRegardlessOfRequest()
+    {
+        var (service, users, _, _, _) = Create();
+        var user = users.Seed(new AppUser())[^1];
+
+        var result = await service.AddAddressAsync(user.Id,
+            new SaveAddressRequest("Home", "1 Main St", "", "Springfield", "", "00000", "US", "555", IsDefault: false),
+            CancellationToken.None);
+
+        Assert.True(result.IsDefault);
+    }
+
+    [Fact]
+    public async Task AddAddressAsync_NewDefault_UnsetsPreviousDefault()
+    {
+        var (service, users, _, _, _) = Create();
+        var user = users.Seed(new AppUser())[^1];
+        await service.AddAddressAsync(user.Id,
+            new SaveAddressRequest("Home", "1 Main St", "", "Springfield", "", "00000", "US", "555", IsDefault: true),
+            CancellationToken.None);
+
+        var second = await service.AddAddressAsync(user.Id,
+            new SaveAddressRequest("Work", "2 Office Rd", "", "Springfield", "", "00001", "US", "555", IsDefault: true),
+            CancellationToken.None);
+
+        var all = await service.GetAddressesAsync(user.Id, CancellationToken.None);
+        Assert.True(second.IsDefault);
+        Assert.Single(all, a => a.IsDefault);
+    }
+
+    [Fact]
+    public async Task DeleteAddressAsync_RemovingDefault_PromotesAnotherAddress()
+    {
+        var (service, users, _, _, _) = Create();
+        var user = users.Seed(new AppUser())[^1];
+        var first = await service.AddAddressAsync(user.Id,
+            new SaveAddressRequest("Home", "1 Main St", "", "Springfield", "", "00000", "US", "555", IsDefault: true),
+            CancellationToken.None);
+        await service.AddAddressAsync(user.Id,
+            new SaveAddressRequest("Work", "2 Office Rd", "", "Springfield", "", "00001", "US", "555", IsDefault: false),
+            CancellationToken.None);
+
+        await service.DeleteAddressAsync(user.Id, first.Id, CancellationToken.None);
+
+        var remaining = await service.GetAddressesAsync(user.Id, CancellationToken.None);
+        var onlyAddress = Assert.Single(remaining);
+        Assert.True(onlyAddress.IsDefault);
+    }
+
+    [Fact]
+    public async Task UpdateAddressAsync_UnknownId_ThrowsNotFound()
+    {
+        var (service, users, _, _, _) = Create();
+        var user = users.Seed(new AppUser())[^1];
+
+        await Assert.ThrowsAsync<NotFoundException>(() => service.UpdateAddressAsync(user.Id, "missing",
+            new SaveAddressRequest("Home", "1 Main St", "", "Springfield", "", "00000", "US", "555", IsDefault: false),
+            CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task UpdateAvatarAsync_ThenRemoveAvatarAsync_ClearsIt()
+    {
+        var (service, users, _, _, _) = Create();
+        var user = users.Seed(new AppUser())[^1];
+
+        var withAvatar = await service.UpdateAvatarAsync(user.Id, "/uploads/biz/avatar.png", CancellationToken.None);
+        Assert.Equal("/uploads/biz/avatar.png", withAvatar.AvatarUrl);
+
+        var cleared = await service.RemoveAvatarAsync(user.Id, CancellationToken.None);
+        Assert.Equal(string.Empty, cleared.AvatarUrl);
+    }
+
     private sealed class IPasswordHasherFake : Vastora.Application.Common.Interfaces.IPasswordHasher
     {
         public string Hash(string password) => $"hashed:{password}";

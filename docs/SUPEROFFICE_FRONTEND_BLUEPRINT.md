@@ -343,6 +343,89 @@ endpoint — it's all-time; if a windowed view is needed, that's a backend gap t
 something to fake by filtering client-side against an unbounded order list this endpoint
 doesn't provide.
 
+**Two caveats added 2026-08-16.** First, BackOffice now has its own *windowed* per-business
+dashboard (`GET /api/businesses/{id}/analytics/dashboard`, main blueprint §9.32) with revenue,
+gross profit, AOV and a daily series. This endpoint stays the cross-business rollup; if a
+TenantOwner wants a date range for one Business, that dashboard is the answer and this app can
+link to it rather than reimplementing it.
+
+Second, and worth knowing before you render a currency symbol: **`totalRevenue` sums raw
+decimals across Businesses regardless of their individual `currency`.** For a Tenant whose
+Businesses all trade in one currency that's correct; for a mixed-currency Tenant the total is
+meaningless. Main blueprint §9.31/§9.38 record this as open — no FX conversion exists. Render
+per-Business figures with each Business's own currency, and either suppress the grand total or
+label it plainly when the Tenant's Businesses don't agree on one.
+
+### 6.5 Integrations — webhooks & API keys (added 2026-08-16, main blueprint §9.39)
+
+`TenantOwner` only, and deliberately: these credentials span **every** Business the Tenant owns,
+which is why they live here rather than in a single BackOffice.
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| GET | `/api/integrations/webhooks/events` | — | `string[]` — the subscribable event names |
+| GET | `/api/integrations/webhooks?page=&pageSize=` | — | `PagedResult<WebhookResponse>` |
+| POST | `/api/integrations/webhooks` | `CreateWebhookRequest` | `WebhookResponse` — **carries the secret, once** |
+| DELETE | `/api/integrations/webhooks/{webhookId}` | — | 204 |
+| GET | `/api/integrations/webhooks/{webhookId}/deliveries?page=&pageSize=` | — | `PagedResult<WebhookDeliveryResponse>` |
+| GET | `/api/integrations/api-keys?page=&pageSize=` | — | `PagedResult<ApiKeyResponse>` |
+| POST | `/api/integrations/api-keys` | `CreateApiKeyRequest` | `ApiKeyResponse` — **carries the key, once** |
+| DELETE | `/api/integrations/api-keys/{apiKeyId}` | — | 204 (revoke) |
+
+```ts
+type CreateWebhookRequest = {
+  url: string;            // must be absolute HTTPS — plain HTTP is rejected with a 409
+  events: string[];       // from /webhooks/events; an unknown name is a 409
+  description: string;
+  businessId: string;     // "" = tenant-wide, every Business the Tenant owns
+};
+type WebhookResponse = {
+  id: string; url: string; events: string[]; description: string; businessId: string;
+  isActive: boolean;
+  secret: string | null;  // NON-NULL ONLY on the create response. Stored hashed; unrecoverable.
+  lastDeliveryAt: string | null;
+  consecutiveFailures: number;
+  disabledAt: string | null;   // auto-disabled after 10 consecutive failures
+  createdAt: string;
+};
+type WebhookDeliveryResponse = {
+  id: string; eventName: string; responseStatusCode: number | null;
+  error: string | null; attemptCount: number; succeeded: boolean; createdAt: string;
+};
+type CreateApiKeyRequest = {
+  name: string;
+  businessId: string | null;   // null/"" = spans every Business under the Tenant
+  scopes: ("read" | "write")[] | null;   // defaults to ["read"]
+  expiresAt: string | null;
+};
+type ApiKeyResponse = {
+  id: string; name: string; keyId: string;
+  secret: string | null;   // NON-NULL ONLY on the create response — the full "keyId.secret" credential
+  businessId: string; scopes: string[];
+  expiresAt: string | null; lastUsedAt: string | null; revokedAt: string | null; createdAt: string;
+};
+```
+
+**Event names** (also served by `/webhooks/events`, prefer that over hardcoding):
+`order.created`, `order.status_changed`, `order.delivered`, `product.low_stock`,
+`return.requested`, `review.submitted`.
+
+Things to build around:
+
+- **The secret and the API key are shown exactly once**, in the create response. Present them in
+  a copy-to-clipboard dialog that says so plainly, and offer "delete and recreate" as the
+  rotation path — there is no reveal endpoint and there never will be.
+- **Payloads are signed** with HMAC-SHA256 in an `X-Vastora-Signature` header
+  (`sha256=<hex>`), alongside `X-Vastora-Event` and `X-Vastora-Delivery`. Document that in the
+  UI next to the URL field; a receiver that doesn't verify the signature has an open endpoint.
+- **Endpoints auto-disable after 10 consecutive failures.** Surface `consecutiveFailures` and
+  `disabledAt` prominently — a silently dead integration is the failure mode here — and make
+  the deliveries log (with status codes and errors) easy to reach from the subscription row.
+- **API keys are issued and validated but not yet accepted as request authentication.** The
+  backend can create and verify them; no authentication handler consumes them on a live request
+  yet (main blueprint §9.39). Build the management screen, but don't promise customers that a
+  key will authenticate an API call today.
+
 ---
 
 ## 7. Recommended pages
@@ -359,13 +442,20 @@ doesn't provide.
    to from the UI).
 5. **Create Business** — form → `POST`, gated per the note in §6.3.
 6. **My profile** — `GET`/`PUT /api/auth/me`.
+7. **Integrations** (§6.5) — webhook subscriptions with a health indicator off
+   `consecutiveFailures`/`disabledAt`, a per-subscription delivery log, and API-key management.
+   Both create dialogs must show the one-time secret clearly.
 
 ---
 
 ## 8. Notes for whoever implements this
 
-- Every list endpoint here returns a plain array, no pagination — fine at foundation scale,
-  revisit if a Tenant ever owns dozens of Businesses.
+- **Pagination now exists, and this is a breaking change (2026-08-16, main blueprint §9.18).**
+  The gap this bullet used to flag is closed: list endpoints return a
+  `PagedResult<T>` envelope — `{ items, page, pageSize, totalCount, totalPages, hasNextPage,
+  hasPreviousPage }` — and accept `?page=&pageSize=` (default 25, max 200). Read `.items`.
+  `GET /api/superoffice/businesses` is the one list in this app small enough that a Tenant will
+  rarely page it, but the shape changed regardless.
 - `Draft` business status exists in the enum but nothing in the current API transitions a
   Business into it automatically — it's presumably meant for "created but not yet ready to
   go live," worth clarifying the intended lifecycle with product before building status-change

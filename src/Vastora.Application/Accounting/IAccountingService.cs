@@ -15,4 +15,11 @@ public interface IAccountingService
 
     /// <summary>All-time cash position plus current inventory valuation (§9.15d) — §9.16c.</summary>
     Task<BalanceSheetResponse> GetBalanceSheetAsync(string businessId, CancellationToken ct = default);
+
+    /// <summary>
+    /// §9.32. The per-business dashboard a BusinessAdmin previously had no endpoint for at all —
+    /// §9.8's analytics were TenantOwner-only, so the platform's most common user could list
+    /// orders and add them up by hand or nothing.
+    /// </summary>
+    Task<BusinessDashboardResponse> GetDashboardAsync(string businessId, DateTime from, DateTime to, CancellationToken ct = default);
 }

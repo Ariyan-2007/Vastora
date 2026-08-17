@@ -7,5 +7,40 @@ public enum LedgerEntryType
 {
     Revenue = 1,
     Refund = 2,
-    DeliveryPayout = 3
+    DeliveryPayout = 3,
+    /// <summary>
+    /// §9.31. Written alongside Revenue on the → Delivered transition, from the UnitCost
+    /// snapshotted onto each OrderItem at checkout. Its own ledger type (rather than a computed
+    /// join back to products) so P&amp;L date-windowing works on it exactly like every other line,
+    /// and so a later cost-price edit can never rewrite a closed period.
+    /// </summary>
+    CostOfGoodsSold = 4,
+    /// <summary>Tax collected on a delivered order — a liability, deliberately not revenue (§9.19).</summary>
+    TaxCollected = 5,
+    /// <summary>Gift card sold: cash in, but a liability until redeemed (§9.24).</summary>
+    GiftCardIssued = 6,
+    GiftCardRedeemed = 7
+}
+
+/// <summary>Where a shopper-visible content block appears on a storefront — §9.30.</summary>
+public enum ContentBlockType
+{
+    /// <summary>Homepage hero/carousel slide.</summary>
+    Banner = 1,
+    /// <summary>Standalone page reachable by slug: about, contact, terms, privacy, shipping policy.</summary>
+    Page = 2,
+    /// <summary>Navigation menu entry.</summary>
+    MenuItem = 3,
+    /// <summary>Blog/news article.</summary>
+    Article = 4
+}
+
+/// <summary>§9.24. A store-credit ledger is append-only; balance is the sum of its entries.</summary>
+public enum StoreCreditReason
+{
+    GiftCardRedemption = 1,
+    RefundToCredit = 2,
+    LoyaltyReward = 3,
+    ManualAdjustment = 4,
+    Spent = 5
 }

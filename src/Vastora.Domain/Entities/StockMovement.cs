@@ -17,6 +17,9 @@ public class StockMovement : BaseEntity, ITenantScoped, IBusinessScoped
 
     public string ProductId { get; set; } = string.Empty;
 
+    /// <summary>§9.22. Set when the movement was against a specific variant's stock rather than the product's own.</summary>
+    public string? VariantId { get; set; }
+
     public StockMovementType Type { get; set; }
 
     public int QuantityDelta { get; set; }

@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Vastora.Application.Common;
 using Vastora.Application.Common.Interfaces;
 using Vastora.Application.Products;
 using Vastora.Domain.Enums;
@@ -13,18 +14,12 @@ namespace Vastora.API.Controllers;
 public class ProductsController(ICurrentUserContext currentUser, IProductService productService, IFileStorageService fileStorage)
     : VastoraControllerBase(currentUser)
 {
-    private static readonly Dictionary<string, string> AllowedImageContentTypes = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["image/jpeg"] = ".jpg",
-        ["image/png"] = ".png",
-        ["image/webp"] = ".webp",
-        ["image/gif"] = ".gif"
-    };
 
     [HttpGet]
-    public async Task<ActionResult<List<ProductResponse>>> GetAll(string businessId, CancellationToken ct)
+    public async Task<ActionResult<PagedResult<ProductResponse>>> GetAll(
+        string businessId, [FromQuery] string? search, [FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken ct = default)
     {
-        var result = await productService.GetForBusinessAsync(businessId, ct);
+        var result = await productService.GetForBusinessAsync(businessId, PageRequest.Of(page, pageSize), search, ct);
         return Ok(result);
     }
 
@@ -66,7 +61,7 @@ public class ProductsController(ICurrentUserContext currentUser, IProductService
 
     /// <summary>Uploads one image, appends it to Product.Images (§9.5). Local disk storage — see IFileStorageService.</summary>
     [HttpPost("{productId}/images")]
-    [RequestSizeLimit(5 * 1024 * 1024)]
+    [RequestSizeLimit(ImageUploadPolicy.MaxFileSizeBytes)]
     public async Task<ActionResult<ProductResponse>> UploadImage(string businessId, string productId, IFormFile file, CancellationToken ct)
     {
         if (file.Length == 0)
@@ -74,9 +69,9 @@ public class ProductsController(ICurrentUserContext currentUser, IProductService
             return BadRequest("File is empty.");
         }
 
-        if (!AllowedImageContentTypes.TryGetValue(file.ContentType, out var extension))
+        if (!ImageUploadPolicy.TryGetExtension(file.ContentType, out var extension))
         {
-            return BadRequest("Unsupported image type. Allowed: image/jpeg, image/png, image/webp, image/gif.");
+            return BadRequest(ImageUploadPolicy.UnsupportedTypeMessage);
         }
 
         await using var stream = file.OpenReadStream();

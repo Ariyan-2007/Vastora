@@ -18,4 +18,17 @@ public interface IUserService
     Task<UserSummaryResponse> UpdateProfileAsync(string userId, UpdateProfileRequest request, CancellationToken ct = default);
 
     Task<UserSummaryResponse> UpdateStatusAsync(string tenantId, string userId, UserStatus status, CancellationToken ct = default);
+
+    Task<UserSummaryResponse> UpdateAvatarAsync(string userId, string avatarUrl, CancellationToken ct = default);
+
+    Task<UserSummaryResponse> RemoveAvatarAsync(string userId, CancellationToken ct = default);
+
+    /// <summary>The saved address book (AppUser.Addresses) — distinct from the one-off address captured per order at checkout.</summary>
+    Task<List<AddressResponse>> GetAddressesAsync(string userId, CancellationToken ct = default);
+
+    Task<AddressResponse> AddAddressAsync(string userId, SaveAddressRequest request, CancellationToken ct = default);
+
+    Task<AddressResponse> UpdateAddressAsync(string userId, string addressId, SaveAddressRequest request, CancellationToken ct = default);
+
+    Task DeleteAddressAsync(string userId, string addressId, CancellationToken ct = default);
 }

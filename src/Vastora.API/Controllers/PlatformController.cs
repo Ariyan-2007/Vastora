@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Vastora.Application.Businesses;
 using Vastora.Application.Common.Interfaces;
 using Vastora.Application.Tenants;
 using Vastora.Domain.Enums;
@@ -10,12 +11,31 @@ namespace Vastora.API.Controllers;
 [Tags("Platform")]
 [Route("api/platform/tenants")]
 [Authorize(Roles = nameof(UserRole.PlatformSuperAdmin))]
-public class PlatformController(ICurrentUserContext currentUser, ITenantService tenantService) : VastoraControllerBase(currentUser)
+public class PlatformController(
+    ICurrentUserContext currentUser,
+    ITenantService tenantService,
+    IBusinessService businessService,
+    IBusinessWipeService businessWipeService) : VastoraControllerBase(currentUser)
 {
     [HttpGet]
     public async Task<ActionResult<List<TenantResponse>>> GetAll(CancellationToken ct)
     {
         var result = await tenantService.GetAllAsync(ct);
+        return Ok(result);
+    }
+
+    /// <summary>
+    /// Platform-initiated onboarding — the exact same provisioning as the public self-serve
+    /// `POST /api/tenants/signup` (Tenant + TenantOwner login + first Business, one call), just
+    /// triggered by Vastora staff instead of the customer. For a deal closed out-of-band (a sales
+    /// call, a signed contract) where the account needs to exist before the customer ever touches
+    /// a signup page.
+    /// </summary>
+    [HttpPost]
+    public async Task<ActionResult<TenantSignUpResponse>> CreateTenant(TenantSignUpRequest request, CancellationToken ct)
+    {
+        var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        var result = await tenantService.SignUpAsync(request, ip, ct);
         return Ok(result);
     }
 
@@ -54,5 +74,45 @@ public class PlatformController(ICurrentUserContext currentUser, ITenantService 
     {
         var result = await tenantService.UpdateTypeAsync(tenantId, request.Type, ct);
         return Ok(result);
+    }
+
+    /// <summary>Every Business under this Tenant, any status — the same list a TenantOwner sees in SuperOffice.</summary>
+    [HttpGet("{tenantId}/businesses")]
+    public async Task<ActionResult<List<BusinessResponse>>> GetBusinesses(string tenantId, CancellationToken ct)
+    {
+        var result = await businessService.GetAllForTenantAsync(tenantId, ct);
+        return Ok(result);
+    }
+
+    /// <summary>
+    /// Adds a Business to any Tenant — the first Business, or an additional one for a
+    /// MultiBusiness tenant. Goes through the same rules as the TenantOwner's own SuperOffice
+    /// "add business" flow (SingleBusiness cap, SubscriptionPlanLimits.MaxBusinesses).
+    /// </summary>
+    [HttpPost("{tenantId}/businesses")]
+    public async Task<ActionResult<BusinessResponse>> CreateBusiness(string tenantId, CreateBusinessRequest request, CancellationToken ct)
+    {
+        var result = await businessService.CreateAsync(tenantId, request, ct);
+        return Ok(result);
+    }
+
+    /// <summary>Draft/Active/Suspended — "shut down" is Suspended. Same operation SuperOffice already exposes to TenantOwner, just unscoped from any single tenant.</summary>
+    [HttpPatch("{tenantId}/businesses/{businessId}/status")]
+    public async Task<ActionResult<BusinessResponse>> UpdateBusinessStatus(string tenantId, string businessId, [FromBody] BusinessStatus status, CancellationToken ct)
+    {
+        var result = await businessService.UpdateStatusAsync(tenantId, businessId, status, ct);
+        return Ok(result);
+    }
+
+    /// <summary>
+    /// Irreversible-in-practice: soft-deletes the Business and everything under it (products,
+    /// orders, staff, coupons, the lot — see BusinessWipeService for the exact scope). Requires
+    /// the caller to echo the Business's slug in the body as a confirmation gate.
+    /// </summary>
+    [HttpPost("{tenantId}/businesses/{businessId}/wipe")]
+    public async Task<IActionResult> WipeBusiness(string tenantId, string businessId, WipeBusinessRequest request, CancellationToken ct)
+    {
+        await businessWipeService.WipeAsync(tenantId, businessId, request.ConfirmSlug, CurrentUser.UserId, ct);
+        return NoContent();
     }
 }

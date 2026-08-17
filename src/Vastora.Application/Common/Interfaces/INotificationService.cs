@@ -1,6 +1,7 @@
 namespace Vastora.Application.Common.Interfaces;
 
-public record NotificationMessage(string RecipientEmail, string Subject, string Body);
+/// <summary><paramref name="HtmlBody"/> is optional — null sends plain text only (e.g. a channel that doesn't render HTML).</summary>
+public record NotificationMessage(string RecipientEmail, string Subject, string Body, string? HtmlBody = null);
 
 /// <summary>
 /// Fire-and-forget outbound notification (order confirmation, status changes, password reset).
