@@ -48,7 +48,13 @@ public class CategoryService(IMongoRepository<Category> categories) : ICategoryS
             throw new NotFoundException(nameof(Category), categoryId);
         }
 
+        if (request.ParentCategoryId != category.ParentCategoryId)
+        {
+            await ValidateNewParentAsync(businessId, categoryId, request.ParentCategoryId, ct);
+        }
+
         category.Name = request.Name;
+        category.ParentCategoryId = request.ParentCategoryId;
         category.Description = request.Description;
         category.ImageUrl = request.ImageUrl;
         category.SortOrder = request.SortOrder;
@@ -57,6 +63,49 @@ public class CategoryService(IMongoRepository<Category> categories) : ICategoryS
 
         await categories.UpdateAsync(category, ct);
         return Map(category);
+    }
+
+    /// <summary>
+    /// A category can be re-parented (moved, or promoted to top-level with null) after creation,
+    /// but the new parent must be a real Category in the same Business, and can't be the category
+    /// itself or one of its own descendants — either would turn the tree into a cycle, which
+    /// GetTreeAsync's recursive walk would loop on forever.
+    /// </summary>
+    private async Task ValidateNewParentAsync(string businessId, string categoryId, string? newParentId, CancellationToken ct)
+    {
+        if (newParentId is null)
+        {
+            return;
+        }
+
+        if (newParentId == categoryId)
+        {
+            throw new ValidationAppException(new Dictionary<string, string[]>
+            {
+                ["parentCategoryId"] = ["A category cannot be its own parent."]
+            });
+        }
+
+        var siblings = await categories.FindAsync(c => c.BusinessId == businessId, ct);
+        var byId = siblings.ToDictionary(c => c.Id);
+        if (!byId.TryGetValue(newParentId, out var parent))
+        {
+            throw new ValidationAppException(new Dictionary<string, string[]>
+            {
+                ["parentCategoryId"] = ["Parent category was not found in this Business."]
+            });
+        }
+
+        for (var current = parent; current is not null; current = current.ParentCategoryId is not null && byId.TryGetValue(current.ParentCategoryId, out var next) ? next : null)
+        {
+            if (current.Id == categoryId)
+            {
+                throw new ValidationAppException(new Dictionary<string, string[]>
+                {
+                    ["parentCategoryId"] = ["Cannot move a category under one of its own descendants."]
+                });
+            }
+        }
     }
 
     public async Task DeleteAsync(string tenantId, string businessId, string categoryId, CancellationToken ct = default)

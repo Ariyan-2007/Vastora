@@ -573,6 +573,16 @@ the rest were scoped down on purpose.
       predicted. `GET .../categories/tree` added alongside the existing flat `GET`. Smoke-tested
       live: created a parent + child category, `GET .../tree` returned the child correctly
       nested under the parent.
+- [x] **Re-parenting, added 2026-08-17.** `UpdateCategoryRequest` now carries `ParentCategoryId`,
+      so a category can be moved to a different parent or promoted back to top-level after
+      creation — it wasn't possible before (`Update` only ever touched name/description/image/
+      sort/active). `CategoryService.UpdateAsync` rejects a category as its own parent and walks
+      the new parent's ancestor chain to reject its own descendants too, either of which would
+      make `GetTreeAsync`'s recursive build loop forever. Covered by three tests in
+      `CategoryServiceTests`. **Still not covered:** the shop's public catalog filter
+      (`?categoryId=`) is an exact match only — browsing a parent category doesn't surface its
+      subcategories' products. Deliberately left out of this pass; would need a
+      descendant-id-expansion helper in `ProductService.QueryCatalogAsync`.
 - [x] **Product variants.** New embedded `ProductVariant` (Id/AttributeSummary/Sku/
       PriceOverride/StockQuantity) on `Product.Variants`, managed via `CreateProductRequest`/
       `UpdateProductRequest`. **Deliberately catalog-only** — Cart/Order still reference a bare
@@ -1255,6 +1265,17 @@ traffic:
 ## 10. Progress Log
 
 Newest entry first. Keep entries short — what happened and why, not a diff.
+
+### 2026-08-17 — Categories can be re-parented after creation (§9.5)
+Asked whether subcategories were supported. They were, end to end (`ParentCategoryId`, the
+`/tree` endpoint, both frontend blueprints already documenting it) — except a category's parent
+could only ever be set at creation; `UpdateCategoryRequest` had no way to move it later. Added
+`ParentCategoryId` to `UpdateCategoryRequest` and cycle-guarding in `CategoryService.UpdateAsync`
+(rejects self-parenting and parenting under one's own descendant, both 400s). BackOffice blueprint
+§7.3 updated with the new field and the parent-picker guidance. Left alone on purpose: the shop's
+`?categoryId=` catalog filter still matches exactly, so browsing "Electronics" won't surface
+"Phones" products — that's a separate, larger change (descendant-id expansion in
+`ProductService.QueryCatalogAsync`) that wasn't asked for this round.
 
 ### 2026-08-16 — §9B implemented: 55 of 77 commerce-completeness items, verified end to end
 Asked to implement the rest of the roadmap and update the frontend blueprints. Did §9.17 through

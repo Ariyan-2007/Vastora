@@ -344,7 +344,8 @@ type CreateCategoryRequest = {
   description: string; imageUrl: string; sortOrder: number;
 };
 type UpdateCategoryRequest = {
-  name: string; description: string; imageUrl: string; sortOrder: number; isActive: boolean;
+  name: string; parentCategoryId: string | null;
+  description: string; imageUrl: string; sortOrder: number; isActive: boolean;
 };
 ```
 
@@ -353,6 +354,14 @@ Categories nested by `parentCategoryId` instead of flat, so a category-managemen
 expand/collapse or a nav dropdown no longer needs to build the tree client-side. The flat `GET`
 still exists and is still the right choice for a simple edit-in-a-table view; use whichever
 shape suits the screen.
+
+**Categories can be re-parented after creation (added 2026-08-17).** `PUT .../categories/{id}`
+now takes `parentCategoryId` too — send `null` to promote a category to top-level, or another
+Category's id to move it under a new parent. A parent-picker on the edit form should exclude the
+category being edited and any of its own descendants; the server rejects both (400, field
+`parentCategoryId`) since either would turn the tree into a cycle that the `/tree` endpoint's
+recursive walk can't terminate on. If you don't want re-parenting on a given screen, just echo
+back the category's current `parentCategoryId` unchanged.
 
 ### 7.4 Products — `/api/businesses/{businessId}/products`
 

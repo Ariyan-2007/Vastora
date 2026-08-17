@@ -21,6 +21,7 @@ public record CreateCategoryRequest(
 
 public record UpdateCategoryRequest(
     string Name,
+    string? ParentCategoryId,
     string Description,
     string ImageUrl,
     int SortOrder,

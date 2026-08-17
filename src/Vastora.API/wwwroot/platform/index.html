@@ -20,7 +20,8 @@
     --err: #f0665f;
     --radius: 8px;
   }
-  * { box-sizing: border-box; }
+  * { box-sizing: border-box; min-width: 0; }
+  html, body { max-width: 100%; overflow-x: hidden; }
   body {
     margin: 0;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -36,9 +37,11 @@
     display: flex;
     align-items: center;
     justify-content: center;
+    padding: 20px;
   }
   .login-card {
     width: 360px;
+    max-width: 100%;
     background: var(--panel);
     border: 1px solid var(--border);
     border-radius: var(--radius);
@@ -111,18 +114,23 @@
     margin-left: 8px;
     vertical-align: middle;
   }
-  header .who { color: var(--text-dim); font-size: 12.5px; }
-  header .right { display: flex; align-items: center; gap: 14px; }
+  header .title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  header .who { color: var(--text-dim); font-size: 12.5px; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  header .right { display: flex; align-items: center; gap: 14px; flex-shrink: 0; }
+  header { flex-wrap: wrap; row-gap: 8px; }
 
   main { flex: 1; padding: 22px; max-width: 1200px; width: 100%; margin: 0 auto; }
-  .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; gap: 10px; }
-  .toolbar input[type=text] { max-width: 280px; margin: 0; }
+  .toolbar { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; margin-bottom: 14px; gap: 10px; }
+  .toolbar input[type=text] { flex: 1 1 200px; max-width: 280px; margin: 0; }
+  .toolbar > div { display: flex; flex-wrap: wrap; gap: 10px; flex-shrink: 0; }
 
   .panel-card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; margin-bottom: 18px; }
   .panel-card h3 { font-size: 14.5px; }
+  .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0 16px; }
 
-  table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
-  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: 13px; }
+  .table-wrap { width: 100%; overflow-x: auto; border-radius: var(--radius); }
+  table { width: 100%; min-width: 720px; border-collapse: collapse; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: 13px; white-space: nowrap; }
   th { color: var(--text-dim); font-weight: 600; font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.04em; background: var(--panel-2); }
   tbody tr:last-child td { border-bottom: none; }
   tbody tr:hover { background: var(--panel-2); cursor: pointer; }
@@ -132,16 +140,17 @@
   .pill.PendingSetup, .pill.Draft { background: rgba(227,179,65,0.15); color: var(--warn); }
   .pill.Suspended, .pill.Cancelled { background: rgba(240,102,95,0.15); color: var(--err); }
 
-  .business-row { border: 1px solid var(--border); border-radius: 6px; padding: 12px; margin-bottom: 10px; }
-  .business-row-top { display: flex; justify-content: space-between; align-items: center; }
-  .business-row-slug { color: var(--text-dim); font-size: 12px; margin-top: 2px; }
+  .business-row { border: 1px solid var(--border); border-radius: 6px; padding: 12px; margin-bottom: 10px; overflow-wrap: break-word; }
+  .business-row-top { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; }
+  .business-row-top .pill { flex-shrink: 0; }
+  .business-row-slug { color: var(--text-dim); font-size: 12px; margin-top: 2px; overflow-wrap: break-word; }
   .danger-zone { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border); }
   button.danger.ghost { background: none; color: var(--err); border: 1px solid rgba(240,102,95,0.4); font-weight: 500; padding: 6px 10px; font-size: 12.5px; }
   .wipe-confirm { margin-top: 8px; background: rgba(240,102,95,0.08); border: 1px solid rgba(240,102,95,0.3); border-radius: 6px; padding: 10px; }
   .wipe-confirm input { margin-bottom: 0; }
 
-  #toast { position: fixed; bottom: 20px; right: 20px; z-index: 999; display: flex; flex-direction: column; gap: 8px; }
-  .toast-item { padding: 10px 14px; border-radius: 6px; font-size: 13px; background: var(--panel-2); border: 1px solid var(--border); box-shadow: 0 4px 14px rgba(0,0,0,0.3); }
+  #toast { position: fixed; bottom: 20px; right: 20px; left: 20px; z-index: 999; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; pointer-events: none; }
+  .toast-item { max-width: 360px; pointer-events: auto; overflow-wrap: break-word; padding: 10px 14px; border-radius: 6px; font-size: 13px; background: var(--panel-2); border: 1px solid var(--border); box-shadow: 0 4px 14px rgba(0,0,0,0.3); }
   .toast-item.ok { border-color: var(--ok); }
   .toast-item.err { border-color: var(--err); }
 
@@ -154,16 +163,19 @@
   }
   #drawer.open { transform: translateX(0); }
   #overlay.open { display: block; }
-  .drawer-header { display: flex; justify-content: space-between; align-items: flex-start; padding: 18px 20px; border-bottom: 1px solid var(--border); }
-  .drawer-header h2 { margin: 0 0 4px; font-size: 16px; }
-  .drawer-header .slug { color: var(--text-dim); font-size: 12px; }
-  .drawer-body { padding: 18px 20px; }
-  .field-row { display: flex; gap: 10px; align-items: flex-end; margin-bottom: 4px; }
-  .field-row select { margin-bottom: 0; }
+  .drawer-header { display: flex; gap: 10px; justify-content: space-between; align-items: flex-start; padding: 18px 20px; border-bottom: 1px solid var(--border); }
+  .drawer-header h2 { margin: 0 0 4px; font-size: 16px; overflow-wrap: break-word; }
+  .drawer-header .slug { color: var(--text-dim); font-size: 12px; overflow-wrap: break-word; }
+  .drawer-header .close-btn { flex-shrink: 0; }
+  .drawer-body { padding: 18px 20px; overflow-wrap: break-word; }
+  .field-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; margin-bottom: 4px; }
+  .field-row select, .field-row input { margin-bottom: 0; flex: 1 1 140px; }
+  .field-row button { flex-shrink: 0; white-space: nowrap; }
   .section { margin-bottom: 22px; }
   .section h3 { font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-dim); margin: 0 0 10px; }
   .kv { display: grid; grid-template-columns: 110px 1fr; gap: 6px 10px; font-size: 13px; margin-bottom: 4px; }
   .kv .k { color: var(--text-dim); }
+  .kv div { overflow-wrap: break-word; }
   .close-btn { background: none; color: var(--text-dim); font-size: 18px; padding: 2px 6px; }
   .usage-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
   .usage-row:last-child { border-bottom: none; }
@@ -210,7 +222,7 @@
     <div id="newTenantPanel" class="panel-card" style="display:none;">
       <h3 style="margin-top:0;">Onboard a new Tenant</h3>
       <p class="hint" style="margin-top:-4px;">Provisions the Tenant, its owner login, and a first Business in one call — the same thing the public signup page does, just triggered by you for a deal closed outside the product (sales call, signed contract).</p>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 16px;">
+      <div class="form-grid">
         <div>
           <label>Tenant name</label>
           <input type="text" id="ntTenantName">
@@ -240,19 +252,21 @@
         </div>
       </div>
       <div class="error-text" id="newTenantError"></div>
-      <div style="display:flex;gap:10px;">
+      <div style="display:flex;flex-wrap:wrap;gap:10px;">
         <button id="newTenantSubmit">Create tenant</button>
         <button class="secondary" id="newTenantCancel">Cancel</button>
       </div>
     </div>
-    <table>
-      <thead>
-        <tr>
-          <th>Name</th><th>Slug</th><th>Type</th><th>Status</th><th>Plan</th><th>Owner contact</th><th>Created</th>
-        </tr>
-      </thead>
-      <tbody id="tenantRows"></tbody>
-    </table>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th><th>Slug</th><th>Type</th><th>Status</th><th>Plan</th><th>Owner contact</th><th>Created</th>
+          </tr>
+        </thead>
+        <tbody id="tenantRows"></tbody>
+      </table>
+    </div>
     <div class="empty-state" id="emptyState" style="display:none;">No tenants match.</div>
   </main>
 </div>
