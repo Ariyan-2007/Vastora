@@ -1344,9 +1344,51 @@ already locked out), and no avatar of any kind.
 
 ---
 
+### 9.42 Image upload for Category, Business logo/banner, and content blocks — done (2026-08-18)
+
+The BackOffice frontend had already wired up calls to `POST /categories/{id}/image`,
+`POST /businesses/{id}/logo`, `POST /businesses/{id}/banner`, and `POST /content/{id}/image` —
+none of them existed yet; `Product.Images` (§9.5) and `AppUser.AvatarUrl` (§9.41) were the only
+fields with a real upload path, everything else (`Category.ImageUrl`, `Business.LogoUrl`/
+`BannerUrl`, `ContentBlock.ImageUrl`) was write-only-as-a-plain-string. Built all four, each
+matching the guessed path exactly:
+- [x] `POST /api/businesses/{businessId}/categories/{categoryId}/image` →
+      `CategoryService.SetImageAsync` (new — sets `ImageUrl` only, doesn't force resending the
+      whole category the way a `PUT` would).
+- [x] `POST /api/businesses/{businessId}/logo` and `.../banner` → `BusinessService.SetLogoAsync`/
+      `SetBannerAsync` (new), restricted to Admin/TenantOwner/Platform — matching `PUT
+      .../businesses/{id}`'s existing Staff exclusion, since both edit the same profile.
+- [x] `POST /api/businesses/{businessId}/content/{blockId}/image` → `ContentService.SetImageAsync`
+      (new), on the existing Merchandising controller alongside the rest of §9.30.
+- [x] **Extracted `ImageUploadPolicy`** (`Vastora.Application.Common`) — the content-type
+      whitelist/size-limit was about to be hand-copied a third and fourth time (Products and the
+      avatar endpoint already each had their own identical copy); `ProductsController` and
+      `AuthController` were refactored onto the shared one in the same change so there's one
+      definition instead of four.
+
+All four follow the exact shape `ProductsController.UploadImage` established: one
+`multipart/form-data` field named `file`, 5 MB limit, jpeg/png/webp/gif only, local disk storage
+via `IFileStorageService`, and a dedicated `SetXAsync`/`AddImageAsync`-style service method so an
+upload never forces the caller to resend the whole entity. Six new tests (two per new service
+method, proving the image field changes and nothing else does). No entity gained a competing
+"only settable one way" rule — `ImageUrl`/`LogoUrl`/`BannerUrl` are still plain strings on their
+create/update DTOs too, for a frontend that already has a URL and doesn't need to upload a file.
+
+---
+
 ## 10. Progress Log
 
 Newest entry first. Keep entries short — what happened and why, not a diff.
+
+### 2026-08-18 — Image upload for categories, business logo/banner, content blocks (§9.42)
+The BackOffice frontend had already guessed at four upload endpoints and wired calls to them;
+only `POST /products/{id}/images` was real. Built the other four to match the guessed paths
+exactly: category image, business logo, business banner, content-block image — each a new
+`SetImageAsync`/`SetLogoAsync`/`SetBannerAsync` service method plus a controller endpoint
+mirroring `ProductsController.UploadImage`'s shape precisely (multipart file, 5 MB limit,
+jpeg/png/webp/gif whitelist, `IFileStorageService`). Also extracted `ImageUploadPolicy` since the
+whitelist dictionary was about to be copied a third and fourth time — Products and the §9.41
+avatar endpoint each already had their own identical copy; both now share the one definition.
 
 ### 2026-08-18 — Category browsing now includes subcategory products (§9.5)
 Closed the gap flagged in the last two sessions: clicking a parent category (e.g. "Electronics")

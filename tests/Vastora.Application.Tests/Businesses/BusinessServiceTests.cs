@@ -66,4 +66,30 @@ public class BusinessServiceTests
 
         Assert.False(result.DeliveryModuleEnabled);
     }
+
+    [Fact]
+    public async Task SetLogoAsync_SetsOnlyTheLogo_LeavingOtherFieldsUntouched()
+    {
+        var (service, businesses, tenants) = Create();
+        var tenant = tenants.Seed(new TenantAccount())[0];
+        var business = businesses.Seed(new Business { TenantId = tenant.Id, Name = "Biz", Slug = "biz", BannerUrl = "/uploads/biz/old-banner.jpg" })[0];
+
+        var result = await service.SetLogoAsync(tenant.Id, business.Id, "/uploads/biz/new-logo.jpg", CancellationToken.None);
+
+        Assert.Equal("/uploads/biz/new-logo.jpg", result.LogoUrl);
+        Assert.Equal("/uploads/biz/old-banner.jpg", result.BannerUrl);
+    }
+
+    [Fact]
+    public async Task SetBannerAsync_SetsOnlyTheBanner_LeavingOtherFieldsUntouched()
+    {
+        var (service, businesses, tenants) = Create();
+        var tenant = tenants.Seed(new TenantAccount())[0];
+        var business = businesses.Seed(new Business { TenantId = tenant.Id, Name = "Biz", Slug = "biz", LogoUrl = "/uploads/biz/old-logo.jpg" })[0];
+
+        var result = await service.SetBannerAsync(tenant.Id, business.Id, "/uploads/biz/new-banner.jpg", CancellationToken.None);
+
+        Assert.Equal("/uploads/biz/new-banner.jpg", result.BannerUrl);
+        Assert.Equal("/uploads/biz/old-logo.jpg", result.LogoUrl);
+    }
 }

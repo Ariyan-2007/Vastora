@@ -30,7 +30,8 @@ public class MerchandisingController(
     IGiftCardService giftCardService,
     IStoreCreditService storeCreditService,
     IShippingService shippingService,
-    IContentService contentService) : VastoraControllerBase(currentUser)
+    IContentService contentService,
+    IFileStorageService fileStorage) : VastoraControllerBase(currentUser)
 {
     // --- §9.23: promotions ---
 
@@ -159,5 +160,26 @@ public class MerchandisingController(
     {
         await contentService.DeleteAsync(ResolvedTenantId, businessId, blockId, ct);
         return NoContent();
+    }
+
+    /// <summary>Uploads one image, replaces ContentBlock.ImageUrl. Local disk storage — see IFileStorageService.</summary>
+    [HttpPost("content/{blockId}/image")]
+    [RequestSizeLimit(ImageUploadPolicy.MaxFileSizeBytes)]
+    public async Task<ActionResult<ContentBlockResponse>> UploadContentImage(string businessId, string blockId, IFormFile file, CancellationToken ct)
+    {
+        if (file.Length == 0)
+        {
+            return BadRequest("File is empty.");
+        }
+
+        if (!ImageUploadPolicy.TryGetExtension(file.ContentType, out var extension))
+        {
+            return BadRequest(ImageUploadPolicy.UnsupportedTypeMessage);
+        }
+
+        await using var stream = file.OpenReadStream();
+        var url = await fileStorage.SaveAsync(businessId, stream, extension, ct);
+        var result = await contentService.SetImageAsync(ResolvedTenantId, businessId, blockId, url, ct);
+        return Ok(result);
     }
 }

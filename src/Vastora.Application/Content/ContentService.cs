@@ -61,6 +61,9 @@ public interface IContentService
 
     Task<ContentBlockResponse> UpdateAsync(string tenantId, string businessId, string blockId, ContentBlockRequest request, CancellationToken ct = default);
 
+    /// <summary>Sets ImageUrl only, so an upload doesn't force the caller to resend the whole block (mirrors ProductService.AddImageAsync).</summary>
+    Task<ContentBlockResponse> SetImageAsync(string tenantId, string businessId, string blockId, string imageUrl, CancellationToken ct = default);
+
     Task DeleteAsync(string tenantId, string businessId, string blockId, CancellationToken ct = default);
 }
 
@@ -134,6 +137,15 @@ public class ContentService(IMongoRepository<ContentBlock> blocks) : IContentSer
         await EnsureSlugIsFreeAsync(businessId, request.Slug, blockId, ct);
 
         Apply(block, request);
+        await blocks.UpdateAsync(block, ct);
+        return Map(block);
+    }
+
+    public async Task<ContentBlockResponse> SetImageAsync(string tenantId, string businessId, string blockId, string imageUrl, CancellationToken ct = default)
+    {
+        var block = await GetScopedAsync(tenantId, businessId, blockId, ct);
+        block.ImageUrl = imageUrl;
+        block.UpdatedAt = DateTime.UtcNow;
         await blocks.UpdateAsync(block, ct);
         return Map(block);
     }

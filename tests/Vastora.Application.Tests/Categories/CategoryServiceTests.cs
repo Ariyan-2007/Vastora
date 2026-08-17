@@ -74,4 +74,18 @@ public class CategoryServiceTests
             new UpdateCategoryRequest("Electronics", electronics.Id, "", "", 0, true),
             CancellationToken.None));
     }
+
+    [Fact]
+    public async Task SetImageAsync_SetsOnlyTheImage_LeavingOtherFieldsUntouched()
+    {
+        var categories = new FakeMongoRepository<Category>();
+        var service = new CategoryService(categories);
+        var electronics = categories.Seed(new Category { TenantId = "tenant-1", BusinessId = "biz-1", Name = "Electronics", SortOrder = 3 })[^1];
+
+        var result = await service.SetImageAsync("tenant-1", "biz-1", electronics.Id, "/uploads/biz-1/electronics.jpg", CancellationToken.None);
+
+        Assert.Equal("/uploads/biz-1/electronics.jpg", result.ImageUrl);
+        Assert.Equal("Electronics", result.Name);
+        Assert.Equal(3, result.SortOrder);
+    }
 }

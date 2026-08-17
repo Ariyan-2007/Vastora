@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Vastora.Application.Categories;
+using Vastora.Application.Common;
 using Vastora.Application.Common.Interfaces;
 using Vastora.Domain.Enums;
 
@@ -10,7 +11,7 @@ namespace Vastora.API.Controllers;
 [Route("api/businesses/{businessId}/categories")]
 [Authorize(Roles = $"{nameof(UserRole.PlatformSuperAdmin)},{nameof(UserRole.TenantOwner)},{nameof(UserRole.BusinessAdmin)},{nameof(UserRole.BusinessStaff)}")]
 [Authorize(Policy = "BusinessMember")]
-public class CategoriesController(ICurrentUserContext currentUser, ICategoryService categoryService)
+public class CategoriesController(ICurrentUserContext currentUser, ICategoryService categoryService, IFileStorageService fileStorage)
     : VastoraControllerBase(currentUser)
 {
     [HttpGet]
@@ -46,6 +47,27 @@ public class CategoriesController(ICurrentUserContext currentUser, ICategoryServ
     public async Task<ActionResult<CategoryResponse>> Update(string businessId, string categoryId, UpdateCategoryRequest request, CancellationToken ct)
     {
         var result = await categoryService.UpdateAsync(ResolvedTenantId, businessId, categoryId, request, ct);
+        return Ok(result);
+    }
+
+    /// <summary>Uploads one image, replaces Category.ImageUrl. Local disk storage — see IFileStorageService.</summary>
+    [HttpPost("{categoryId}/image")]
+    [RequestSizeLimit(ImageUploadPolicy.MaxFileSizeBytes)]
+    public async Task<ActionResult<CategoryResponse>> UploadImage(string businessId, string categoryId, IFormFile file, CancellationToken ct)
+    {
+        if (file.Length == 0)
+        {
+            return BadRequest("File is empty.");
+        }
+
+        if (!ImageUploadPolicy.TryGetExtension(file.ContentType, out var extension))
+        {
+            return BadRequest(ImageUploadPolicy.UnsupportedTypeMessage);
+        }
+
+        await using var stream = file.OpenReadStream();
+        var url = await fileStorage.SaveAsync(businessId, stream, extension, ct);
+        var result = await categoryService.SetImageAsync(ResolvedTenantId, businessId, categoryId, url, ct);
         return Ok(result);
     }
 

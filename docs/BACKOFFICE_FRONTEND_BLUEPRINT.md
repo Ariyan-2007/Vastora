@@ -246,6 +246,8 @@ type UserSummaryResponse = {
 | GET | `/api/businesses/{businessId}` | Admin, Staff, TenantOwner, Platform | — | `BusinessResponse` |
 | PUT | `/api/businesses/{businessId}` | Admin, TenantOwner, Platform (**not** Staff) | `UpdateBusinessRequest` | `BusinessResponse` |
 | PATCH | `/api/businesses/{businessId}/delivery-module` | Admin, TenantOwner, Platform (**not** Staff) | `{ enabled: boolean }` | `BusinessResponse` |
+| POST | `/api/businesses/{businessId}/logo` | Admin, TenantOwner, Platform (**not** Staff) | `multipart/form-data`, field `file` | `BusinessResponse` |
+| POST | `/api/businesses/{businessId}/banner` | Admin, TenantOwner, Platform (**not** Staff) | `multipart/form-data`, field `file` | `BusinessResponse` |
 
 Added 2026-08-15 (main blueprint §9.14): the last row turns the DeliveryAgent workflow on/off
 for this Business — pickup-only sellers or ones using a third-party courier can switch it off.
@@ -317,6 +319,14 @@ contain tax and it is *extracted* at checkout; false means it's added on top. Ge
 backwards silently overcharges (or undercharges) every customer, so label the toggle in plain
 language — "My prices already include tax" — rather than with the field name.
 
+**Logo/banner upload, added 2026-08-18.** `logoUrl`/`bannerUrl` on `UpdateBusinessRequest` still
+work for setting a URL directly, but the real upload flow is the two dedicated endpoints above —
+same shape as product images (§7.4): one `multipart/form-data` field named `file`, 5 MB limit,
+`image/jpeg`/`image/png`/`image/webp`/`image/gif` only, local disk storage via
+`IFileStorageService`. Each returns the full updated `BusinessResponse`, not just the new URL —
+use `.logoUrl`/`.bannerUrl` off the response to update the preview immediately rather than
+re-fetching the Business.
+
 ### 7.3 Categories — `/api/businesses/{businessId}/categories`
 
 | Method | Path | Roles | Body | Returns |
@@ -326,6 +336,7 @@ language — "My prices already include tax" — rather than with the field name
 | GET | `/{categoryId}` | any BackOffice role | — | `CategoryResponse` |
 | POST | `` | any BackOffice role | `CreateCategoryRequest` | `CategoryResponse` |
 | PUT | `/{categoryId}` | any BackOffice role | `UpdateCategoryRequest` | `CategoryResponse` |
+| POST | `/{categoryId}/image` | any BackOffice role | `multipart/form-data`, field `file` | `CategoryResponse` |
 | DELETE | `/{categoryId}` | Admin, TenantOwner, Platform (**not** Staff, added 2026-08-15, §9.3) | — | 204 |
 
 ```ts
@@ -362,6 +373,12 @@ category being edited and any of its own descendants; the server rejects both (4
 `parentCategoryId`) since either would turn the tree into a cycle that the `/tree` endpoint's
 recursive walk can't terminate on. If you don't want re-parenting on a given screen, just echo
 back the category's current `parentCategoryId` unchanged.
+
+**Image upload, added 2026-08-18.** `imageUrl` on create/update still accepts a plain string, but
+`POST .../categories/{categoryId}/image` is the real upload flow — same shape as product images
+(§7.4): one `multipart/form-data` field named `file`, 5 MB limit,
+`image/jpeg`/`image/png`/`image/webp`/`image/gif` only. Requires an existing category (create it
+first without an image, then upload). Returns the full `CategoryResponse` with `imageUrl` set.
 
 ### 7.4 Products — `/api/businesses/{businessId}/products`
 
@@ -839,7 +856,7 @@ All under `/api/businesses/{businessId}`. Full CRUD on each unless noted.
 | Gift cards (§9.24) | `GET/POST .../gift-cards`, `DELETE .../gift-cards/{id}` (deactivate) |
 | Store credit (§9.24) | `GET/POST .../customers/{customerUserId}/store-credit` |
 | Shipping zones (§9.20) | `GET/POST .../shipping-zones`, `PUT/DELETE .../shipping-zones/{id}` |
-| Storefront content (§9.30) | `GET/POST .../content?type=`, `PUT/DELETE .../content/{id}` |
+| Storefront content (§9.30) | `GET/POST .../content?type=`, `PUT/DELETE .../content/{id}`, `POST .../content/{id}/image` (added 2026-08-18) |
 
 ```ts
 type CreatePromotionRequest = {
@@ -889,6 +906,11 @@ type ContentBlockRequest = {
 
 Notes worth building around:
 
+- **Content image upload, added 2026-08-18.** `imageUrl` on `ContentBlockRequest` still accepts a
+  plain string, but `POST .../content/{id}/image` is the real upload flow for a banner/article
+  image — same shape as product images (§7.4): one `multipart/form-data` field named `file`,
+  5 MB limit, `image/jpeg`/`image/png`/`image/webp`/`image/gif` only. Requires an existing block
+  (create it first, then upload). Returns the full `ContentBlockResponse` with `imageUrl` set.
 - **`Coupon` (§7.5) still exists and still works.** Promotions sit alongside it, not on top —
   every existing code keeps behaving as it did. In the UI, present coupons as "simple codes" and
   promotions as "campaigns"; don't merge the two screens.

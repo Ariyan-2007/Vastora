@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Vastora.Application.Auth;
+using Vastora.Application.Common;
 using Vastora.Application.Common.Interfaces;
 using Vastora.Application.Privacy;
 using Vastora.Application.Users;
@@ -17,13 +18,6 @@ public class AuthController(
     IPrivacyService privacyService,
     IFileStorageService fileStorage) : VastoraControllerBase(currentUser)
 {
-    private static readonly Dictionary<string, string> AllowedAvatarContentTypes = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["image/jpeg"] = ".jpg",
-        ["image/png"] = ".png",
-        ["image/webp"] = ".webp",
-        ["image/gif"] = ".gif"
-    };
 
     [HttpPost("login")]
     [AllowAnonymous]
@@ -130,7 +124,7 @@ public class AuthController(
     /// <summary>Local disk storage — see IFileStorageService. Same content-type whitelist/size limit as product images.</summary>
     [HttpPost("me/avatar")]
     [Authorize]
-    [RequestSizeLimit(5 * 1024 * 1024)]
+    [RequestSizeLimit(ImageUploadPolicy.MaxFileSizeBytes)]
     public async Task<ActionResult<UserSummaryResponse>> UploadAvatar(IFormFile file, CancellationToken ct)
     {
         if (file.Length == 0)
@@ -138,9 +132,9 @@ public class AuthController(
             return BadRequest("File is empty.");
         }
 
-        if (!AllowedAvatarContentTypes.TryGetValue(file.ContentType, out var extension))
+        if (!ImageUploadPolicy.TryGetExtension(file.ContentType, out var extension))
         {
-            return BadRequest("Unsupported image type. Allowed: image/jpeg, image/png, image/webp, image/gif.");
+            return BadRequest(ImageUploadPolicy.UnsupportedTypeMessage);
         }
 
         await using var stream = file.OpenReadStream();

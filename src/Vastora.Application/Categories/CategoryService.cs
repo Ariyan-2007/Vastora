@@ -108,6 +108,20 @@ public class CategoryService(IMongoRepository<Category> categories) : ICategoryS
         }
     }
 
+    public async Task<CategoryResponse> SetImageAsync(string tenantId, string businessId, string categoryId, string imageUrl, CancellationToken ct = default)
+    {
+        var category = await GetScopedAsync(businessId, categoryId, ct);
+        if (category.TenantId != tenantId)
+        {
+            throw new NotFoundException(nameof(Category), categoryId);
+        }
+
+        category.ImageUrl = imageUrl;
+        category.UpdatedAt = DateTime.UtcNow;
+        await categories.UpdateAsync(category, ct);
+        return Map(category);
+    }
+
     public async Task DeleteAsync(string tenantId, string businessId, string categoryId, CancellationToken ct = default)
     {
         var category = await GetScopedAsync(businessId, categoryId, ct);

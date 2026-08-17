@@ -126,6 +126,24 @@ public class BusinessService(
         return Map(business);
     }
 
+    public async Task<BusinessResponse> SetLogoAsync(string tenantId, string businessId, string logoUrl, CancellationToken ct = default)
+    {
+        var business = await GetScopedAsync(tenantId, businessId, ct);
+        business.LogoUrl = logoUrl;
+        business.UpdatedAt = DateTime.UtcNow;
+        await businesses.UpdateAsync(business, ct);
+        return Map(business);
+    }
+
+    public async Task<BusinessResponse> SetBannerAsync(string tenantId, string businessId, string bannerUrl, CancellationToken ct = default)
+    {
+        var business = await GetScopedAsync(tenantId, businessId, ct);
+        business.BannerUrl = bannerUrl;
+        business.UpdatedAt = DateTime.UtcNow;
+        await businesses.UpdateAsync(business, ct);
+        return Map(business);
+    }
+
     public async Task<BusinessResponse> UpdateStatusAsync(string tenantId, string businessId, BusinessStatus status, CancellationToken ct = default)
     {
         var business = await GetScopedAsync(tenantId, businessId, ct);
