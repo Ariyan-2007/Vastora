@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using Vastora.Application.Common;
 using Vastora.Application.Common.Exceptions;
 using Vastora.Application.Common.Interfaces;
+using Vastora.Application.Notifications;
 using Vastora.Domain.Entities;
 using Vastora.Domain.Enums;
 
@@ -72,7 +73,7 @@ public class AuthService(
         };
 
         await users.AddAsync(user, ct);
-        await IssueEmailVerificationAsync(user, ct);
+        await IssueEmailVerificationAsync(user, business, ct);
 
         if (RequireEmailVerification)
         {
@@ -119,7 +120,9 @@ public class AuthService(
         var user = await users.FindOneAsync(u => u.Email == email && u.Role != UserRole.Customer, ct);
         if (user is not null)
         {
-            await IssuePasswordResetAsync(user, ct);
+            // BackOffice/Platform staff aren't scoped to a single storefront, so there's no
+            // Business to brand this with — IssuePasswordResetAsync falls back to generic branding.
+            await IssuePasswordResetAsync(user, null, ct);
         }
     }
 
@@ -140,7 +143,7 @@ public class AuthService(
             u => u.Email == email && u.BusinessId == business.Id && u.Role == UserRole.Customer, ct);
         if (user is not null)
         {
-            await IssuePasswordResetAsync(user, ct);
+            await IssuePasswordResetAsync(user, business, ct);
         }
     }
 
@@ -182,7 +185,8 @@ public class AuthService(
             return;
         }
 
-        await IssueEmailVerificationAsync(user, ct);
+        var business = string.IsNullOrEmpty(user.BusinessId) ? null : await businesses.GetByIdAsync(user.BusinessId, ct);
+        await IssueEmailVerificationAsync(user, business, ct);
     }
 
     public async Task VerifyEmailAsync(string token, CancellationToken ct = default)
@@ -217,7 +221,7 @@ public class AuthService(
         await emailVerificationTokens.UpdateAsync(stored, ct);
     }
 
-    private async Task IssueEmailVerificationAsync(AppUser user, CancellationToken ct)
+    private async Task IssueEmailVerificationAsync(AppUser user, Business? business, CancellationToken ct)
     {
         // Any previously issued token is retired first, so a resend genuinely replaces the old
         // link rather than leaving several live at once.
@@ -243,10 +247,9 @@ public class AuthService(
 
         try
         {
-            await notificationService.NotifyAsync(new NotificationMessage(
-                user.Email,
-                "Confirm your email address",
-                $"Use this token to confirm your email (expires {expiresAt:u}): {tokenValue}"), ct);
+            var link = $"{platformSettings.PublicBaseUrl.TrimEnd('/')}/verify-email?token={Uri.EscapeDataString(tokenValue)}";
+            var (subject, plainBody, htmlBody) = EmailTemplates.VerifyEmail(business, user.FullName, link, expiresAt);
+            await notificationService.NotifyAsync(new NotificationMessage(user.Email, subject, plainBody, htmlBody), ct);
         }
         catch
         {
@@ -258,7 +261,7 @@ public class AuthService(
     internal static string GenerateUnsubscribeToken() =>
         Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
 
-    private async Task IssuePasswordResetAsync(AppUser user, CancellationToken ct)
+    private async Task IssuePasswordResetAsync(AppUser user, Business? business, CancellationToken ct)
     {
         var tokenValue = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
         var expiresAt = DateTime.UtcNow.Add(PasswordResetTokenLifetime);
@@ -270,10 +273,9 @@ public class AuthService(
             ExpiresAt = expiresAt
         }, ct);
 
-        await notificationService.NotifyAsync(new NotificationMessage(
-            user.Email,
-            "Reset your Vastora password",
-            $"Use this token to reset your password (expires {expiresAt:u}): {tokenValue}"), ct);
+        var link = $"{platformSettings.PublicBaseUrl.TrimEnd('/')}/reset-password?token={Uri.EscapeDataString(tokenValue)}";
+        var (subject, plainBody, htmlBody) = EmailTemplates.PasswordReset(business, user.FullName, link, expiresAt);
+        await notificationService.NotifyAsync(new NotificationMessage(user.Email, subject, plainBody, htmlBody), ct);
     }
 
     private async Task<AuthResponse> AuthenticateAsync(AppUser user, string password, string ip, CancellationToken ct)

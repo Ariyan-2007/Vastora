@@ -88,10 +88,14 @@ registration/login and public catalog browsing use the `{slug}` in the path.
   email matches a Customer account on this Business — don't build a UI that reveals which.
   `POST /api/auth/reset-password` `{ token, newPassword }` (not slug-rooted — shared across
   every realm on the platform, the token itself identifies the account) completes it and
-  revokes every active session for that customer. **No real email delivery exists yet** — the
-  reset token is currently only visible in the backend's own server log, so this flow isn't
-  actually usable by a real customer until an email provider is chosen and wired in; still
-  worth building the UI now so it's ready.
+  revokes every active session for that customer. The email itself is a real branded HTML
+  template now (added 2026-08-17, §9.10) — the Business's logo/name/brand color if this is a
+  storefront account, generic Vastora branding for a BackOffice/Platform one — built around a
+  working `{PublicBaseUrl}/reset-password?token=...` link, not a bare token to copy-paste.
+  **Still no real delivery provider is configured by default** — until a deployment sets
+  `Smtp:Host`, this (like every other email) only ever reaches the backend's own server log, so
+  the flow isn't usable by a real customer yet; still worth building the UI, it's ready the day
+  SMTP is configured.
 
 **Storage:** for a Next.js app, prefer storing tokens in an httpOnly cookie set by a Next.js
 Route Handler that proxies the login/refresh calls, rather than `localStorage` — this app is
@@ -142,8 +146,17 @@ Base URL = `NEXT_PUBLIC_API_BASE_URL`. `{slug}` = `NEXT_PUBLIC_BUSINESS_SLUG`.
 | POST | `/api/auth/reset-password` | none | `{ token, newPassword }` | 204 |
 | POST | `/api/auth/refresh` | none | `{ refreshToken }` | `AuthResponse` |
 | POST | `/api/auth/logout` | none | `{ refreshToken }` | 204 |
+| POST | `/api/auth/verify-email` | none | `{ token }` | 204 |
+| POST | `/api/auth/resend-verification` | Customer | — | 204 |
+| POST | `/api/auth/unsubscribe/{token}` | none | — | 204 — always, non-enumerating (§9.36) |
 | GET | `/api/auth/me` | Customer | — | `UserSummaryResponse` |
 | PUT | `/api/auth/me` | Customer | `{ fullName, phone }` | `UserSummaryResponse` |
+
+**`/api/auth/*` is shared across every realm on the platform** (Customer, BackOffice staff, Platform), not Shop-specific — `GET`/`PUT /api/auth/me` and the verify/resend/unsubscribe routes above are the same endpoints a BackOffice user hits, scoped by whichever JWT is presented. Only `register`/`login`/the storefront `forgot-password` are Business-slug-rooted and Customer-only (§4).
+
+**Email verification, not phone.** `AppUser` has a `PhoneVerifiedAt` field in the data model but **no endpoint anywhere verifies a phone number** — don't build a "verify your phone" UI expecting one to exist. `resend-verification` re-sends the email link only; it 204s even if the account is already verified (idempotent, don't treat that as an error).
+
+**Unsubscribe is login-free by design (§9.36).** `POST /api/auth/unsubscribe/{token}` takes `AppUser.UnsubscribeToken` (present on `CustomerDataExport`, and echoed as the last path segment of the unsubscribe link built into marketing emails — abandoned-cart, back-in-stock, review-request) and always 204s, valid token or not, so the link can never be used to probe for account existence. Land it on a simple confirmation page; there's nothing to display beyond "you're unsubscribed."
 
 ```ts
 type StorefrontRegisterRequest = { fullName: string; email: string; password: string; phone: string };
@@ -569,6 +582,16 @@ self-cancelled by the customer. Restocks items automatically on success, and sin
 also returns any gift-card value and store credit that was spent on it. After delivery the route
 is a **return** (§9.21), not a cancellation.
 
+**Order tracking is entirely `GET`-based — there's no push channel.** Everything a tracking page
+needs lives on `OrderResponse` itself: `status`, `statusHistory` (the full timeline, §9.7),
+`paymentStatus`/`paymentStatusHistory`, and `carrierName`/`trackingNumber`/`trackingUrl` once
+staff add them. There is no separate `/track` or `/timeline` endpoint — fetch the order
+(`GET .../orders/{orderId}` signed-in, or `GET .../orders/lookup?orderNumber=&email=` for a
+guest) and build the whole page from that one response; re-poll it if a "refresh status" button
+is wanted. **No SMS or push notification exists for order updates** — every status change is
+email-only (best-effort, §9.10), so don't build a "text me updates" toggle;
+`NotificationPreferences.marketingSms` exists as a data field but nothing sends to it yet.
+
 ### 6.5 New in 2026-08-16 — account surface
 
 `/api/shop/account/*`, Customer only, scope entirely from the JWT.
@@ -621,6 +644,21 @@ customer subscribes to its restock email — say so on the button when `isAvaila
 **Account deletion anonymises rather than erases (§9.37).** Orders survive, stripped of personal
 data, because the merchant has its own legal duty to retain them. Say that in the confirmation
 dialog; "we'll delete everything" would be untrue.
+
+**No saved-address book — a genuine gap, not an oversight to work around client-side.**
+`AppUser.Addresses` exists in the data model (it's readable, untyped, inside
+`CustomerDataExport.addresses` from `GET .../data-export`, and it's what `DELETE
+/api/shop/account` clears on anonymisation), but **there is no endpoint to list, add, edit,
+delete, or default a saved address** — no `/api/shop/account/addresses` of any shape exists
+today. The only place an address is ever written is inline, per order, as
+`CheckoutRequest.shippingAddress`/`billingAddress` (§6.4); it is captured onto that `Order` and
+never fed back into `AppUser.Addresses`. Concretely: **don't build an "Addresses" tab on the
+account page that lists past addresses or lets a customer pick a saved one at checkout** — there
+is nothing to list. The checkout address form has to be filled in every time, or the frontend has
+to persist a "last used address" itself (e.g. in `localStorage`) and pre-fill the form with it —
+that's a client-side convenience, not something the API remembers. If a real address book is
+wanted, that's backend work to request (a small, well-scoped addition — the `Address` shape
+already exists), not something buildable against the current API.
 
 ---
 
@@ -677,5 +715,11 @@ dialog; "we'll delete everything" would be untrue.
   there, you're calling a BackOffice route by mistake — that's the merchant's supplier pricing.
 - **Still no payment gateway** (§9.6). Checkout is cash-on-delivery-shaped; `amountDue` tells you
   what's left after gift cards and store credit, but nothing collects it online.
-- **Still no real email delivery** (§9.10). Verification tokens, password resets and order
-  confirmations are written to the server log. Build the flows; they work, they just don't send.
+- **Still no real delivery provider configured by default** (§9.10). Every transactional and
+  lifecycle email — verification, password reset, order confirmation/status/shipping, returns/
+  refunds, abandoned cart, back-in-stock, review requests — now renders as a real branded HTML
+  template (added 2026-08-17) with the Business's logo, name, and brand color, alongside a
+  plain-text fallback. It's genuinely sendable SMTP mail (`SmtpNotificationService`, MailKit) —
+  but until a deployment sets `Smtp:Host`, it only ever reaches the backend's own server log
+  (`LoggingNotificationService`). Build every flow that depends on receiving one of these; they
+  work end-to-end once SMTP is configured, they just don't leave the server today.

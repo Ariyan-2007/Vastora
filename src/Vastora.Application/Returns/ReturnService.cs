@@ -3,6 +3,7 @@ using Vastora.Application.Common.Exceptions;
 using Vastora.Application.Common.Interfaces;
 using Vastora.Application.GiftCards;
 using Vastora.Application.Inventory;
+using Vastora.Application.Notifications;
 using Vastora.Application.Webhooks;
 using Vastora.Domain.Entities;
 using Vastora.Domain.Enums;
@@ -226,7 +227,7 @@ public class ReturnService(
         }
 
         await returns.UpdateAsync(entity, ct);
-        await NotifyAsync(entity, $"Return {entity.RmaNumber} {entity.Status}", request.Note, ct);
+        await NotifyAsync(entity, b => EmailTemplates.ReturnDecision(b, entity, request.Note), ct);
 
         return Map(entity);
     }
@@ -330,8 +331,7 @@ public class ReturnService(
         Transition(entity, ReturnStatus.Refunded, $"Refunded {amount:0.00} {entity.Currency}.", staffUserId);
         await returns.UpdateAsync(entity, ct);
 
-        await NotifyAsync(entity, $"Refund issued for {entity.RmaNumber}",
-            $"We've refunded {amount:0.00} {entity.Currency} for order {entity.OrderNumber}.", ct);
+        await NotifyAsync(entity, b => EmailTemplates.RefundIssued(b, entity, amount), ct);
 
         return Map(entity);
     }
@@ -403,14 +403,16 @@ public class ReturnService(
         entity.StatusHistory.Add(new ReturnStatusEvent { Status = status, Note = note, ByUserId = byUserId });
     }
 
-    private async Task NotifyAsync(ReturnRequest entity, string subject, string body, CancellationToken ct)
+    private async Task NotifyAsync(ReturnRequest entity, Func<Business?, (string Subject, string PlainBody, string HtmlBody)> buildMessage, CancellationToken ct)
     {
         try
         {
             var order = await orders.GetByIdAsync(entity.OrderId, ct);
             if (!string.IsNullOrWhiteSpace(order?.ContactEmail))
             {
-                await notificationService.NotifyAsync(new NotificationMessage(order.ContactEmail, subject, body), ct);
+                var business = await businesses.GetByIdAsync(entity.BusinessId, ct);
+                var (subject, plainBody, htmlBody) = buildMessage(business);
+                await notificationService.NotifyAsync(new NotificationMessage(order.ContactEmail, subject, plainBody, htmlBody), ct);
             }
         }
         catch

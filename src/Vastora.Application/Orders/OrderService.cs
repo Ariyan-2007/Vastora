@@ -5,6 +5,7 @@ using Vastora.Application.Common.Interfaces;
 using Vastora.Application.Coupons;
 using Vastora.Application.GiftCards;
 using Vastora.Application.Inventory;
+using Vastora.Application.Notifications;
 using Vastora.Application.Pricing;
 using Vastora.Application.Promotions;
 using Vastora.Application.Webhooks;
@@ -103,8 +104,7 @@ public class OrderService(
             await SettleAsync(tenantId, business, order, breakdown, customerUserId, ct);
             await ClearCartAsync(cart, ct);
 
-            await NotifyCustomerAsync(order, "Order confirmed",
-                $"Your order {order.OrderNumber} has been placed. Total: {order.Total:0.00} {order.Currency}.", ct);
+            await NotifyCustomerAsync(order, b => EmailTemplates.OrderConfirmation(b, order), ct);
 
             await webhookPublisher.PublishAsync(tenantId, businessId, WebhookEvents.OrderCreated, MapForWebhook(order), ct);
 
@@ -472,8 +472,7 @@ public class OrderService(
         order.StatusHistory.Add(new OrderStatusEvent { Status = request.Status, Note = request.Note });
         await orders.UpdateAsync(order, ct);
 
-        await NotifyCustomerAsync(order, "Order status updated",
-            $"Your order {order.OrderNumber} is now '{order.Status}'.", ct);
+        await NotifyCustomerAsync(order, b => EmailTemplates.OrderStatusUpdate(b, order, request.Note), ct);
 
         await webhookPublisher.PublishAsync(tenantId, businessId, WebhookEvents.OrderStatusChanged, MapForWebhook(order), ct);
 
@@ -544,8 +543,7 @@ public class OrderService(
 
         await orders.UpdateAsync(order, ct);
 
-        await NotifyCustomerAsync(order, "Your order has shipped",
-            $"Order {order.OrderNumber} is on its way. Tracking: {request.TrackingNumber}", ct);
+        await NotifyCustomerAsync(order, b => EmailTemplates.OrderShipped(b, order, request.CarrierName, request.TrackingNumber, order.TrackingUrl), ct);
 
         return Map(order);
     }
@@ -748,9 +746,10 @@ public class OrderService(
 
     /// <summary>
     /// Best-effort — a notification failure must never fail the order operation that triggered
-    /// it (§9.10). Now also resolves a guest order's contact email, which has no AppUser behind it.
+    /// it (§9.10). Also resolves a guest order's contact email, which has no AppUser behind it,
+    /// and the order's own Business so the email template can carry its logo/brand color.
     /// </summary>
-    private async Task NotifyCustomerAsync(Order order, string subject, string body, CancellationToken ct)
+    private async Task NotifyCustomerAsync(Order order, Func<Business?, (string Subject, string PlainBody, string HtmlBody)> buildMessage, CancellationToken ct)
     {
         try
         {
@@ -769,7 +768,9 @@ public class OrderService(
 
             if (!string.IsNullOrWhiteSpace(email))
             {
-                await notificationService.NotifyAsync(new NotificationMessage(email, subject, body), ct);
+                var business = await businesses.GetByIdAsync(order.BusinessId, ct);
+                var (subject, plainBody, htmlBody) = buildMessage(business);
+                await notificationService.NotifyAsync(new NotificationMessage(email, subject, plainBody, htmlBody), ct);
             }
         }
         catch (Exception ex)

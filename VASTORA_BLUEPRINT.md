@@ -719,6 +719,32 @@ the rest were scoped down on purpose.
       it (matters more once a real provider with real transient failures replaces the logger).
       A real provider (SendGrid/SES/Twilio/...) needs to be chosen and dropped in behind the
       same interface — deliberately not invented without one to build against.
+- [x] **Real SMTP transport, added since this section was written.** `SmtpNotificationService`
+      (MailKit) sends for real whenever `Smtp:Host` is configured; `LoggingNotificationService`
+      stays the default (blank `Smtp:Host`) so local dev/demo keeps working exactly as above.
+      Selected in `DependencyInjection.AddInfrastructure` by presence of `Smtp:Host` — no caller
+      changed. Still no SendGrid/SES/Twilio integration specifically; MailKit talks to any SMTP
+      account, which is the more general fix.
+- [x] **Branded HTML templates, added 2026-08-17.** Every email in the system — verification,
+      password reset, order confirmation/status-change/shipped, return decision, refund issued,
+      abandoned cart, back-in-stock, merchant low-stock, review request — now renders as a real
+      HTML email (plus a plain-text fallback in the same `multipart/alternative` message) instead
+      of a bare interpolated string. One shared layout (`EmailTemplates.Layout`,
+      `Vastora.Application/Notifications/EmailTemplates.cs`) carries the `Business`'s
+      `LogoUrl`/`Name`/`ThemeColor` into every customer-facing message, falling back to generic
+      Vastora branding when there's no single Business to brand as (a BackOffice/Platform
+      password reset). `NotificationMessage` gained an optional `HtmlBody`; `INotificationService`
+      itself didn't change shape. Password-reset and email-verification now build a real
+      `{PublicBaseUrl}/...?token=...` link instead of handing back a bare token — `PublicBaseUrl`
+      existed for exactly this and was previously unused. Marketing-adjacent templates (abandoned
+      cart, back-in-stock, review request) carry an unsubscribe link built from the recipient's
+      `UnsubscribeToken`. All dynamic content is HTML-encoded before interpolation — several of
+      these bodies embed staff-entered or customer-entered free text (a return decision note, a
+      product name), so this is the templates' own XSS guard, independent of the SMTP transport.
+      **Still open, deliberately not built this pass:** no gift-card-issuance or invoice-delivery
+      email exists (§9.24/§9.33 have the data but never call `INotificationService`), and
+      `AssignDeliveryAgentAsync`/`UpdatePaymentStatusAsync`/return `MarkReceivedAsync`/`CancelAsync`
+      still send nothing on their own transitions.
 
 ### 9.11 Observability & hardening — done (2026-08-15)
 - [x] **Structured logging.** `Serilog.AspNetCore`, console sink only (no external aggregator
@@ -1265,6 +1291,24 @@ traffic:
 ## 10. Progress Log
 
 Newest entry first. Keep entries short — what happened and why, not a diff.
+
+### 2026-08-17 — Branded HTML email templates for every send point (§9.10)
+Asked for "professional standard" templates for every email the platform sends, with the
+Business's logo in the body, plus the Antivaly shop blueprint brought up to date on profile and
+order-tracking endpoints. Every one of the ~11 email moments in the codebase (verification,
+password reset, order confirmation/status/shipped, return decision, refund issued, abandoned
+cart, back-in-stock, merchant low-stock, review request) now renders through one shared HTML
+layout (`EmailTemplates.cs`) that pulls in the Business's logo/name/brand color, with a
+plain-text fallback in the same message. Password reset and verification now build a real
+clickable link off `PublicBaseUrl` instead of handing back a bare token to paste in by hand.
+Delivery itself is unchanged — still SMTP-if-configured, server-log otherwise (§9.10) — only the
+content changed. Auditing the shop blueprint against the actual controllers surfaced two real
+gaps, documented rather than silently implemented since neither was asked for: `AppUser.Addresses`
+exists in the data model and is exported/anonymised, but no endpoint ever lets a customer add to
+it, so there's no address book to build a UI against; and order tracking is `GET`-only with no
+SMS/push channel, so a "text me updates" toggle would have nothing to call. `docs/
+ANTIVALY_SHOP_BLUEPRINT.md` §6.1 also picked up three routes it was missing entirely
+(`verify-email`, `resend-verification`, `unsubscribe/{token}`).
 
 ### 2026-08-17 — Categories can be re-parented after creation (§9.5)
 Asked whether subcategories were supported. They were, end to end (`ParentCategoryId`, the

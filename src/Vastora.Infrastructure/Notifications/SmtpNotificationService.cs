@@ -23,7 +23,16 @@ public class SmtpNotificationService(IOptions<SmtpSettings> options, ILogger<Smt
         mime.From.Add(new MailboxAddress(_settings.FromName, _settings.FromAddress));
         mime.To.Add(MailboxAddress.Parse(message.RecipientEmail));
         mime.Subject = message.Subject;
-        mime.Body = new TextPart("plain") { Text = message.Body };
+
+        // BodyBuilder emits multipart/alternative when both are set, so clients that render HTML
+        // show the branded template and everything else falls back to the plain-text part.
+        var builder = new BodyBuilder { TextBody = message.Body };
+        if (!string.IsNullOrWhiteSpace(message.HtmlBody))
+        {
+            builder.HtmlBody = message.HtmlBody;
+        }
+
+        mime.Body = builder.ToMessageBody();
 
         try
         {

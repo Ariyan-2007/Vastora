@@ -63,8 +63,8 @@ public class LifecycleNotificationService(
 
         foreach (var cart in stale.Where(c => c.Items.Count > 0))
         {
-            var (email, allowed) = await ResolveMarketingRecipientAsync(cart.CustomerUserId, cart.ContactEmail, ct);
-            if (!allowed || string.IsNullOrWhiteSpace(email))
+            var recipient = await ResolveMarketingRecipientAsync(cart.CustomerUserId, cart.ContactEmail, ct);
+            if (!recipient.Allowed || string.IsNullOrWhiteSpace(recipient.Email))
             {
                 // Still stamped, so an opted-out cart isn't re-examined on every sweep forever.
                 cart.AbandonedReminderSentAt = DateTime.UtcNow;
@@ -72,10 +72,13 @@ public class LifecycleNotificationService(
                 continue;
             }
 
-            var itemNames = string.Join(", ", cart.Items.Take(3).Select(i => i.ProductName));
+            var itemNames = cart.Items.Take(3).Select(i => i.ProductName).ToList();
+            var business = await businesses.GetByIdAsync(cart.BusinessId, ct);
+            var unsubscribeUrl = UnsubscribeUrl(recipient.UnsubscribeToken);
+            var (subject, plainBody, htmlBody) = EmailTemplates.AbandonedCart(
+                business, recipient.Name, itemNames, cart.Items.Sum(i => i.Quantity), null, unsubscribeUrl);
 
-            if (await TrySendAsync(email, "You left something behind",
-                    $"Your cart still has {cart.Items.Sum(i => i.Quantity)} item(s): {itemNames}.", ct))
+            if (await TrySendAsync(recipient.Email, subject, plainBody, htmlBody, ct))
             {
                 sent++;
             }
@@ -107,8 +110,10 @@ public class LifecycleNotificationService(
                 continue;
             }
 
-            if (await TrySendAsync(user.Email, $"{product.Name} is back in stock",
-                    $"'{product.Name}' is available again.", ct))
+            var business = await businesses.GetByIdAsync(product.BusinessId, ct);
+            var (subject, plainBody, htmlBody) = EmailTemplates.BackInStock(business, product.Name, null, UnsubscribeUrl(user.UnsubscribeToken));
+
+            if (await TrySendAsync(user.Email, subject, plainBody, htmlBody, ct))
             {
                 sent++;
             }
@@ -137,10 +142,10 @@ public class LifecycleNotificationService(
                 continue;
             }
 
-            var lines = string.Join("\n", group.Select(p => $"- {p.Name} ({p.Sku}): {p.StockQuantity} left"));
+            var items = group.Select(p => (p.Name, p.Sku, p.StockQuantity, p.ReorderThreshold)).ToList();
+            var (subject, plainBody, htmlBody) = EmailTemplates.LowStockMerchant(business, items);
 
-            if (await TrySendAsync(business.ContactEmail, $"{group.Count()} product(s) low on stock",
-                    $"These products are at or below their reorder threshold:\n{lines}", ct))
+            if (await TrySendAsync(business.ContactEmail, subject, plainBody, htmlBody, ct))
             {
                 sent++;
             }
@@ -197,8 +202,10 @@ public class LifecycleNotificationService(
                 continue;
             }
 
-            if (await TrySendAsync(user.Email, "How was your order?",
-                    $"Tell others what you thought of: {string.Join(", ", unreviewed)}.", ct))
+            var business = await businesses.GetByIdAsync(order.BusinessId, ct);
+            var (subject, plainBody, htmlBody) = EmailTemplates.ReviewRequest(business, user.FullName, unreviewed, UnsubscribeUrl(user.UnsubscribeToken));
+
+            if (await TrySendAsync(user.Email, subject, plainBody, htmlBody, ct))
             {
                 sent++;
             }
@@ -212,24 +219,29 @@ public class LifecycleNotificationService(
     /// AppUser and therefore no recorded consent — so it is treated as *not* opted in, which is
     /// the only defensible default.
     /// </summary>
-    private async Task<(string? Email, bool Allowed)> ResolveMarketingRecipientAsync(string customerUserId, string? fallbackEmail, CancellationToken ct)
+    private async Task<(string? Email, bool Allowed, string? Name, string? UnsubscribeToken)> ResolveMarketingRecipientAsync(
+        string customerUserId, string? fallbackEmail, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(customerUserId))
         {
-            return (fallbackEmail, false);
+            return (fallbackEmail, false, null, null);
         }
 
         var user = await users.GetByIdAsync(customerUserId, ct);
         return user is null
-            ? (fallbackEmail, false)
-            : (user.Email, user.NotificationPreferences.MarketingEmail);
+            ? (fallbackEmail, false, null, null)
+            : (user.Email, user.NotificationPreferences.MarketingEmail, user.FullName, user.UnsubscribeToken);
     }
 
-    private async Task<bool> TrySendAsync(string email, string subject, string body, CancellationToken ct)
+    /// <summary>Login-free opt-out link (§9.36) — the token alone identifies the account.</summary>
+    private string UnsubscribeUrl(string? unsubscribeToken) =>
+        string.IsNullOrEmpty(unsubscribeToken) ? string.Empty : $"{settings.PublicBaseUrl.TrimEnd('/')}/unsubscribe/{unsubscribeToken}";
+
+    private async Task<bool> TrySendAsync(string email, string subject, string plainBody, string htmlBody, CancellationToken ct)
     {
         try
         {
-            await notificationService.NotifyAsync(new NotificationMessage(email, subject, body), ct);
+            await notificationService.NotifyAsync(new NotificationMessage(email, subject, plainBody, htmlBody), ct);
             return true;
         }
         catch (Exception ex)
