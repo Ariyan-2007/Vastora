@@ -132,6 +132,125 @@ public class UserService(
         return Map(user);
     }
 
+    public async Task<UserSummaryResponse> UpdateAvatarAsync(string userId, string avatarUrl, CancellationToken ct = default)
+    {
+        var user = await users.GetByIdAsync(userId, ct)
+            ?? throw new NotFoundException(nameof(AppUser), userId);
+
+        user.AvatarUrl = avatarUrl;
+        user.UpdatedAt = DateTime.UtcNow;
+        await users.UpdateAsync(user, ct);
+        return Map(user);
+    }
+
+    public async Task<UserSummaryResponse> RemoveAvatarAsync(string userId, CancellationToken ct = default)
+    {
+        var user = await users.GetByIdAsync(userId, ct)
+            ?? throw new NotFoundException(nameof(AppUser), userId);
+
+        user.AvatarUrl = string.Empty;
+        user.UpdatedAt = DateTime.UtcNow;
+        await users.UpdateAsync(user, ct);
+        return Map(user);
+    }
+
+    public async Task<List<AddressResponse>> GetAddressesAsync(string userId, CancellationToken ct = default)
+    {
+        var user = await users.GetByIdAsync(userId, ct)
+            ?? throw new NotFoundException(nameof(AppUser), userId);
+
+        return [.. user.Addresses.Select(AddressResponse.From)];
+    }
+
+    public async Task<AddressResponse> AddAddressAsync(string userId, SaveAddressRequest request, CancellationToken ct = default)
+    {
+        var user = await users.GetByIdAsync(userId, ct)
+            ?? throw new NotFoundException(nameof(AppUser), userId);
+
+        // The very first saved address is always the default, regardless of what was requested —
+        // there is no sensible "no default" state once at least one address exists.
+        var isDefault = request.IsDefault || user.Addresses.Count == 0;
+        if (isDefault)
+        {
+            foreach (var existing in user.Addresses)
+            {
+                existing.IsDefault = false;
+            }
+        }
+
+        var address = new Address
+        {
+            Id = Guid.NewGuid().ToString("N"),
+            Label = request.Label,
+            Line1 = request.Line1,
+            Line2 = request.Line2,
+            City = request.City,
+            State = request.State,
+            PostalCode = request.PostalCode,
+            Country = request.Country,
+            Phone = request.Phone,
+            IsDefault = isDefault
+        };
+
+        user.Addresses.Add(address);
+        user.UpdatedAt = DateTime.UtcNow;
+        await users.UpdateAsync(user, ct);
+        return AddressResponse.From(address);
+    }
+
+    public async Task<AddressResponse> UpdateAddressAsync(string userId, string addressId, SaveAddressRequest request, CancellationToken ct = default)
+    {
+        var user = await users.GetByIdAsync(userId, ct)
+            ?? throw new NotFoundException(nameof(AppUser), userId);
+
+        var address = user.Addresses.FirstOrDefault(a => a.Id == addressId)
+            ?? throw new NotFoundException(nameof(Address), addressId);
+
+        if (request.IsDefault)
+        {
+            foreach (var existing in user.Addresses)
+            {
+                existing.IsDefault = false;
+            }
+        }
+
+        address.Label = request.Label;
+        address.Line1 = request.Line1;
+        address.Line2 = request.Line2;
+        address.City = request.City;
+        address.State = request.State;
+        address.PostalCode = request.PostalCode;
+        address.Country = request.Country;
+        address.Phone = request.Phone;
+        address.IsDefault = request.IsDefault;
+
+        user.UpdatedAt = DateTime.UtcNow;
+        await users.UpdateAsync(user, ct);
+        return AddressResponse.From(address);
+    }
+
+    public async Task DeleteAddressAsync(string userId, string addressId, CancellationToken ct = default)
+    {
+        var user = await users.GetByIdAsync(userId, ct)
+            ?? throw new NotFoundException(nameof(AppUser), userId);
+
+        var address = user.Addresses.FirstOrDefault(a => a.Id == addressId)
+            ?? throw new NotFoundException(nameof(Address), addressId);
+
+        var wasDefault = address.IsDefault;
+        user.Addresses.Remove(address);
+
+        // Promoting the next one keeps "there's always a default once any address exists" true
+        // after a delete too, not just after an add.
+        if (wasDefault && user.Addresses.Count > 0)
+        {
+            user.Addresses[0].IsDefault = true;
+        }
+
+        user.UpdatedAt = DateTime.UtcNow;
+        await users.UpdateAsync(user, ct);
+    }
+
     private async Task<AppUser> GetScopedAsync(string tenantId, string userId, CancellationToken ct)
     {
         var user = await users.GetByIdAsync(userId, ct);
@@ -143,6 +262,5 @@ public class UserService(
         return user;
     }
 
-    private static UserSummaryResponse Map(AppUser u) =>
-        new(u.Id, u.FullName, u.Email, u.Role, u.TenantId, u.BusinessId, u.Status);
+    private static UserSummaryResponse Map(AppUser u) => UserSummaryResponse.From(u);
 }

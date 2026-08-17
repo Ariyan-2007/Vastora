@@ -9,7 +9,7 @@ using Vastora.Domain.Enums;
 
 namespace Vastora.Application.Products;
 
-public class ProductService(IMongoRepository<Product> products, IMongoRepository<TenantAccount> tenants) : IProductService
+public class ProductService(IMongoRepository<Product> products, IMongoRepository<TenantAccount> tenants, IMongoRepository<Category> categories) : IProductService
 {
     public async Task<ProductResponse> CreateAsync(string tenantId, string businessId, CreateProductRequest request, CancellationToken ct = default)
     {
@@ -131,13 +131,14 @@ public class ProductService(IMongoRepository<Product> products, IMongoRepository
     private async Task<List<Product>> QueryCatalogAsync(string businessId, CatalogQuery query, CancellationToken ct)
     {
         var pattern = string.IsNullOrWhiteSpace(query.Search) ? null : Regex.Escape(query.Search.Trim());
-        var categoryId = string.IsNullOrWhiteSpace(query.CategoryId) ? null : query.CategoryId;
+        var categoryIds = await ResolveCategoryAndDescendantIdsAsync(
+            businessId, string.IsNullOrWhiteSpace(query.CategoryId) ? null : query.CategoryId, ct);
         var brand = string.IsNullOrWhiteSpace(query.Brand) ? null : query.Brand;
 
         var candidates = await products.FindAsync(
             p => p.BusinessId == businessId
                  && p.Status == ProductStatus.Active
-                 && (categoryId == null || p.CategoryId == categoryId)
+                 && (categoryIds == null || categoryIds.Contains(p.CategoryId))
                  && (brand == null || p.Brand == brand)
                  && (query.MinPrice == null || p.Price >= query.MinPrice)
                  && (query.MaxPrice == null || p.Price <= query.MaxPrice)
@@ -163,6 +164,39 @@ public class ProductService(IMongoRepository<Product> products, IMongoRepository
         }
 
         return [.. filtered];
+    }
+
+    /// <summary>
+    /// A parent category's page must show its subcategories' products too — browsing "Electronics"
+    /// with nothing under it isn't a category page, it's an empty page (§9.5/§9.41's follow-up).
+    /// Returns null when no categoryId was requested (no filter at all), or the requested id plus
+    /// every descendant found by walking Category.ParentCategoryId — the same flat-collection tree
+    /// walk CategoryService.GetTreeAsync uses, just flattened to an id set instead of a tree.
+    /// </summary>
+    private async Task<HashSet<string>?> ResolveCategoryAndDescendantIdsAsync(string businessId, string? categoryId, CancellationToken ct)
+    {
+        if (categoryId is null)
+        {
+            return null;
+        }
+
+        var all = await categories.FindAsync(c => c.BusinessId == businessId, ct);
+        var byParent = all.ToLookup(c => c.ParentCategoryId);
+
+        var ids = new HashSet<string> { categoryId };
+        var frontier = new Queue<string>([categoryId]);
+        while (frontier.Count > 0)
+        {
+            foreach (var child in byParent[frontier.Dequeue()])
+            {
+                if (ids.Add(child.Id))
+                {
+                    frontier.Enqueue(child.Id);
+                }
+            }
+        }
+
+        return ids;
     }
 
     private static List<Product> ApplySort(List<Product> items, ProductSort sort) => sort switch

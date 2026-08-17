@@ -151,8 +151,28 @@ Base URL = `NEXT_PUBLIC_API_BASE_URL`. `{slug}` = `NEXT_PUBLIC_BUSINESS_SLUG`.
 | POST | `/api/auth/unsubscribe/{token}` | none | — | 204 — always, non-enumerating (§9.36) |
 | GET | `/api/auth/me` | Customer | — | `UserSummaryResponse` |
 | PUT | `/api/auth/me` | Customer | `{ fullName, phone }` | `UserSummaryResponse` |
+| POST | `/api/auth/me/change-password` | Customer | `{ currentPassword, newPassword }` | 204 |
+| POST | `/api/auth/me/avatar` | Customer | `multipart/form-data`, field `file` | `UserSummaryResponse` |
+| DELETE | `/api/auth/me/avatar` | Customer | — | `UserSummaryResponse` |
 
-**`/api/auth/*` is shared across every realm on the platform** (Customer, BackOffice staff, Platform), not Shop-specific — `GET`/`PUT /api/auth/me` and the verify/resend/unsubscribe routes above are the same endpoints a BackOffice user hits, scoped by whichever JWT is presented. Only `register`/`login`/the storefront `forgot-password` are Business-slug-rooted and Customer-only (§4).
+**`/api/auth/*` is shared across every realm on the platform** (Customer, BackOffice staff, Platform), not Shop-specific — `GET`/`PUT /api/auth/me`, `change-password`, `avatar`, and the verify/resend/unsubscribe routes above are the same endpoints a BackOffice user hits, scoped by whichever JWT is presented. Only `register`/`login`/the storefront `forgot-password` are Business-slug-rooted and Customer-only (§4).
+
+**Change password vs. reset password — two different flows for two different situations
+(added 2026-08-17, main blueprint §9.41).** `POST /api/auth/me/change-password` is for a
+signed-in customer who knows their current password and wants a new one — it verifies
+`currentPassword` server-side and 401s if it's wrong. `POST /api/auth/reset-password` (§4) is
+for a customer who's locked out and has no session — it trusts the emailed token instead. Both
+end the same way: every active session is revoked, forcing a fresh login everywhere, including
+the device that made the change. Build the "change password" form under Account settings against
+the first one; don't reuse the forgot-password flow just because a session already exists.
+
+**Avatar upload (added 2026-08-17, §9.41).** `POST /api/auth/me/avatar` takes a single
+`multipart/form-data` file field named `file` — same 5 MB limit and
+`image/jpeg`/`image/png`/`image/webp`/`image/gif` whitelist as product images. Local disk storage
+today (`IFileStorageService`), so treat `avatarUrl` as relative to the API base URL, same as
+`Business.logoUrl`/`bannerUrl`/product `images`. `DELETE /api/auth/me/avatar` clears it back to
+`""`, at which point the frontend should fall back to a generated initial/placeholder avatar —
+there's no default image server-side.
 
 **Email verification, not phone.** `AppUser` has a `PhoneVerifiedAt` field in the data model but **no endpoint anywhere verifies a phone number** — don't build a "verify your phone" UI expecting one to exist. `resend-verification` re-sends the email link only; it 204s even if the account is already verified (idempotent, don't treat that as an error).
 
@@ -169,9 +189,12 @@ type AuthResponse = {
 };
 type UserSummaryResponse = {
   id: string; fullName: string; email: string;
+  phone: string; avatarUrl: string;               // added 2026-08-17, §9.41 — avatarUrl is "" when none set
   role: "Customer"; // will always be Customer for accounts created through this app
   tenantId: string; businessId: string;
   status: "PendingVerification" | "Active" | "Blocked";
+  emailVerifiedAt: string | null; phoneVerifiedAt: string | null;  // phoneVerifiedAt is always null — see the note above, nothing ever sets it
+  createdAt: string;                               // "member since"
 };
 ```
 
@@ -210,6 +233,24 @@ type UserSummaryResponse = {
 `sort=Relevance` is the merchandising default: featured first, then the merchant's `sortWeight`,
 then newest. Build the filter sidebar from `/products/facets` — it is computed over the *same*
 filter as the listing, so its counts and the results can never disagree.
+
+**`categoryId` matches the category *and every subcategory underneath it* (fixed 2026-08-18,
+main blueprint §9.5) — build the category page around that, not around an exact match.**
+`?categoryId=<Electronics.id>` returns products tagged `Electronics` directly **and** products
+tagged `Phones`/`Laptops`/anything nested under it — a shopper browsing "Electronics" sees
+everything in the department, the way any real storefront works, not just the handful of
+products someone remembered to tag at the top level. Picking a specific subcategory
+(`?categoryId=<Phones.id>`) narrows back down, since a leaf category has nothing under it to
+expand into.
+
+**The subcategory filter chips you'd want on a category page come from `/products/facets`,
+free — no separate endpoint.** Because facets are computed over the same (now subcategory-
+inclusive) filter as the listing, `GET .../products/facets?categoryId=<Electronics.id>`'s
+`categories` array breaks down the *current* result set by each product's own category — in
+practice, that means counts per subcategory (`{ value: "<Phones.id>", count: 12 }`,
+`{ value: "<Laptops.id>", count: 5 }`, ...) the moment a parent category is selected. Resolve
+those ids to names via `GET .../categories` or `.../categories/tree` (§6.2/BackOffice §7.3) to
+render them as chips — clicking one is just navigating to `?categoryId=<that id>`.
 
 ```ts
 type BusinessResponse = {
@@ -607,6 +648,10 @@ email-only (best-effort, §9.10), so don't build a "text me updates" toggle;
 | GET | `/api/shop/account/data-export` | `CustomerDataExport` — offer as a JSON download |
 | PUT | `/api/shop/account/notification-preferences` | 204 |
 | DELETE | `/api/shop/account` | 204 — **irreversible**, confirm hard |
+| GET | `/api/shop/account/addresses` | `AddressResponse[]` — added 2026-08-17, §9.41 |
+| POST | `/api/shop/account/addresses` | `AddressResponse` — `SaveAddressRequest` body |
+| PUT | `/api/shop/account/addresses/{addressId}` | `AddressResponse` — `SaveAddressRequest` body |
+| DELETE | `/api/shop/account/addresses/{addressId}` | 204 |
 
 ```ts
 type WishlistItemResponse = {
@@ -630,6 +675,16 @@ type UpdateNotificationPreferencesRequest = {
   reviewRequests: boolean;
   marketingSms: boolean;
 };
+
+// --- added 2026-08-17, §9.41 ---
+type AddressResponse = {
+  id: string; label: string; line1: string; line2: string; city: string; state: string;
+  postalCode: string; country: string; phone: string; isDefault: boolean;
+};
+type SaveAddressRequest = {
+  label: string; line1: string; line2: string; city: string; state: string;
+  postalCode: string; country: string; phone: string; isDefault: boolean;
+};
 ```
 
 **Reviews are moderated by default (§9.25).** A submitted review comes back `Pending` unless the
@@ -645,20 +700,24 @@ customer subscribes to its restock email — say so on the button when `isAvaila
 data, because the merchant has its own legal duty to retain them. Say that in the confirmation
 dialog; "we'll delete everything" would be untrue.
 
-**No saved-address book — a genuine gap, not an oversight to work around client-side.**
-`AppUser.Addresses` exists in the data model (it's readable, untyped, inside
-`CustomerDataExport.addresses` from `GET .../data-export`, and it's what `DELETE
-/api/shop/account` clears on anonymisation), but **there is no endpoint to list, add, edit,
-delete, or default a saved address** — no `/api/shop/account/addresses` of any shape exists
-today. The only place an address is ever written is inline, per order, as
-`CheckoutRequest.shippingAddress`/`billingAddress` (§6.4); it is captured onto that `Order` and
-never fed back into `AppUser.Addresses`. Concretely: **don't build an "Addresses" tab on the
-account page that lists past addresses or lets a customer pick a saved one at checkout** — there
-is nothing to list. The checkout address form has to be filled in every time, or the frontend has
-to persist a "last used address" itself (e.g. in `localStorage`) and pre-fill the form with it —
-that's a client-side convenience, not something the API remembers. If a real address book is
-wanted, that's backend work to request (a small, well-scoped addition — the `Address` shape
-already exists), not something buildable against the current API.
+**Saved address book, added 2026-08-17 (§9.41) — the gap flagged in the previous session is
+closed.** `AddressResponse.id` is what makes an entry individually addressable for `PUT`/`DELETE`
+— it's empty/meaningless on the one-off address embedded in an `Order` at checkout
+(`OrderResponse.shippingAddress`/`billingAddress`, §6.4), only real on a saved book entry. Two
+behaviors worth building UI around rather than re-deriving client-side:
+- **The first address ever saved becomes the default automatically**, regardless of what
+  `isDefault` was sent as — there is no "no default" state once at least one address exists. A
+  simple "Save address" button on first use doesn't need its own default-toggle.
+- **Deleting the current default promotes another one** (arbitrarily one of the rest) rather
+  than leaving the book without a default. Don't assume "no default address" is reachable once
+  the list is non-empty.
+
+Still true, and still a frontend decision, not a backend gap: checkout itself is unchanged —
+`CheckoutRequest.shippingAddress`/`billingAddress` still take an inline address every time
+(§6.4). A "pick a saved address" control on the checkout form means fetching
+`GET .../addresses` and pre-filling the inline fields from whichever one the shopper picks (the
+one with `isDefault: true` is the sensible pre-selection) — the backend was never taught to
+accept an address *id* at checkout, only a full address object.
 
 ---
 
@@ -683,7 +742,11 @@ already exists), not something buildable against the current API.
    status timeline built from `statusHistory` (§6.4), cancel action gated by `status` per
    §6.4's note, a tracking link when `trackingUrl` is set, and a "return items" action for
    `Delivered` orders inside the return window.
-9. **Account / profile** — `GET`/`PUT /api/auth/me`, plus the §6.5 surface.
+9. **Account / profile** — `GET`/`PUT /api/auth/me` for name/phone, `POST/DELETE
+   /api/auth/me/avatar` for the profile picture, `POST /api/auth/me/change-password` for an
+   in-session password change (§6.1), a saved-addresses tab against `/api/shop/account/addresses`
+   (§6.5), plus the rest of the §6.5 surface (wishlist, reviews, store credit, gift cards,
+   notification preferences, data export, delete account).
 10. **Guest order tracking** — a public page taking order number + email against
    `GET /api/shop/orders/lookup`. Link it from the confirmation email; a guest has no account
    to log into.

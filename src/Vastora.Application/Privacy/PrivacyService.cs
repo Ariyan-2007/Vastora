@@ -74,7 +74,7 @@ public class PrivacyService(
             DateTime.UtcNow,
             new
             {
-                user.Id, user.FullName, user.Email, user.Phone,
+                user.Id, user.FullName, user.Email, user.Phone, user.AvatarUrl,
                 Role = user.Role.ToString(),
                 Status = user.Status.ToString(),
                 user.CreatedAt, user.LastLoginAt, user.EmailVerifiedAt,
@@ -108,6 +108,7 @@ public class PrivacyService(
         user.FullName = "Deleted customer";
         user.Email = $"anonymised-{user.Id}@deleted.invalid";
         user.Phone = string.Empty;
+        user.AvatarUrl = string.Empty;
         user.Addresses.Clear();
         user.PasswordHash = string.Empty;
         user.Status = Domain.Enums.UserStatus.Blocked;

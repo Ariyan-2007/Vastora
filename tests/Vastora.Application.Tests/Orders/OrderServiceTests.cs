@@ -47,7 +47,7 @@ public class OrderServiceTests
         var webhooks = new Mock<IWebhookPublisher>().Object;
 
         var tenants = new FakeMongoRepository<TenantAccount>();
-        var productService = new ProductService(products, tenants);
+        var productService = new ProductService(products, tenants, new FakeMongoRepository<Category>());
         var stockStore = new FakeProductStockStore(products);
         var inventoryService = new InventoryService(products, new FakeMongoRepository<StockMovement>(), stockStore, productService);
 

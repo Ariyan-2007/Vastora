@@ -15,7 +15,7 @@ public class InventoryServiceTests
         var products = new FakeMongoRepository<Product>();
         var movements = new FakeMongoRepository<StockMovement>();
         var tenants = new FakeMongoRepository<TenantAccount>();
-        var productService = new ProductService(products, tenants);
+        var productService = new ProductService(products, tenants, new FakeMongoRepository<Category>());
         var stockStore = new FakeProductStockStore(products);
         return (new InventoryService(products, movements, stockStore, productService), products, movements);
     }

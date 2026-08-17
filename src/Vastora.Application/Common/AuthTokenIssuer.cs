@@ -30,7 +30,7 @@ public class AuthTokenIssuer(IJwtTokenService jwtTokenService, IMongoRepository<
             accessToken.ExpiresAt,
             refreshTokenValue,
             expiresAt,
-            new UserSummaryResponse(user.Id, user.FullName, user.Email, user.Role, user.TenantId, user.BusinessId, user.Status));
+            UserSummaryResponse.From(user));
     }
 
     internal static string Hash(string value)

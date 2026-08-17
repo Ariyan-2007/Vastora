@@ -27,7 +27,7 @@ public class ReturnServiceTests
         var ledger = new FakeMongoRepository<LedgerEntry>();
         var credit = new FakeMongoRepository<StoreCreditEntry>();
 
-        var productService = new ProductService(products, new FakeMongoRepository<TenantAccount>());
+        var productService = new ProductService(products, new FakeMongoRepository<TenantAccount>(), new FakeMongoRepository<Category>());
         var stockStore = new FakeProductStockStore(products);
         var inventory = new InventoryService(products, new FakeMongoRepository<StockMovement>(), stockStore, productService);
 

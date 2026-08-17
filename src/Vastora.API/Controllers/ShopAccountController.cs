@@ -5,6 +5,7 @@ using Vastora.Application.Common.Interfaces;
 using Vastora.Application.GiftCards;
 using Vastora.Application.Privacy;
 using Vastora.Application.Reviews;
+using Vastora.Application.Users;
 using Vastora.Application.Wishlists;
 using Vastora.Domain.Enums;
 
@@ -12,8 +13,8 @@ namespace Vastora.API.Controllers;
 
 /// <summary>
 /// A customer's own account surface: wishlist, reviews they've written, store credit, gift-card
-/// balances, notification preferences and their data-rights actions — §9.24, §9.25, §9.26, §9.37.
-/// Scope comes entirely from the JWT, never the route.
+/// balances, saved addresses, notification preferences and their data-rights actions — §9.24,
+/// §9.25, §9.26, §9.37. Scope comes entirely from the JWT, never the route.
 /// </summary>
 [Tags("Shop - Account")]
 [Route("api/shop/account")]
@@ -24,7 +25,8 @@ public class ShopAccountController(
     IReviewService reviewService,
     IStoreCreditService storeCreditService,
     IGiftCardService giftCardService,
-    IPrivacyService privacyService) : VastoraControllerBase(currentUser)
+    IPrivacyService privacyService,
+    IUserService userService) : VastoraControllerBase(currentUser)
 {
     // --- §9.26: wishlist ---
 
@@ -59,6 +61,27 @@ public class ShopAccountController(
     [HttpGet("gift-cards/{code}")]
     public async Task<ActionResult<GiftCardBalanceResponse>> CheckGiftCard(string code, CancellationToken ct) =>
         Ok(await giftCardService.CheckBalanceAsync(CurrentUser.BusinessId, code, ct));
+
+    // --- saved address book (distinct from the one-off address captured per order at checkout) ---
+
+    [HttpGet("addresses")]
+    public async Task<ActionResult<List<AddressResponse>>> GetAddresses(CancellationToken ct) =>
+        Ok(await userService.GetAddressesAsync(CurrentUser.UserId, ct));
+
+    [HttpPost("addresses")]
+    public async Task<ActionResult<AddressResponse>> AddAddress(SaveAddressRequest request, CancellationToken ct) =>
+        Ok(await userService.AddAddressAsync(CurrentUser.UserId, request, ct));
+
+    [HttpPut("addresses/{addressId}")]
+    public async Task<ActionResult<AddressResponse>> UpdateAddress(string addressId, SaveAddressRequest request, CancellationToken ct) =>
+        Ok(await userService.UpdateAddressAsync(CurrentUser.UserId, addressId, request, ct));
+
+    [HttpDelete("addresses/{addressId}")]
+    public async Task<IActionResult> DeleteAddress(string addressId, CancellationToken ct)
+    {
+        await userService.DeleteAddressAsync(CurrentUser.UserId, addressId, ct);
+        return NoContent();
+    }
 
     // --- §9.37: data rights ---
 

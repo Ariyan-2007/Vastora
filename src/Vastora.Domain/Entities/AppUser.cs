@@ -24,6 +24,9 @@ public class AppUser : BaseEntity, ITenantScoped, IBusinessScoped
 
     public string Phone { get; set; } = string.Empty;
 
+    /// <summary>Profile picture. Empty means none set — clients fall back to a generated initial/avatar.</summary>
+    public string AvatarUrl { get; set; } = string.Empty;
+
     public UserRole Role { get; set; } = UserRole.Customer;
 
     public UserStatus Status { get; set; } = UserStatus.PendingVerification;

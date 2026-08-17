@@ -579,10 +579,20 @@ the rest were scoped down on purpose.
       sort/active). `CategoryService.UpdateAsync` rejects a category as its own parent and walks
       the new parent's ancestor chain to reject its own descendants too, either of which would
       make `GetTreeAsync`'s recursive build loop forever. Covered by three tests in
-      `CategoryServiceTests`. **Still not covered:** the shop's public catalog filter
-      (`?categoryId=`) is an exact match only — browsing a parent category doesn't surface its
-      subcategories' products. Deliberately left out of this pass; would need a
-      descendant-id-expansion helper in `ProductService.QueryCatalogAsync`.
+      `CategoryServiceTests`.
+- [x] **Subcategory-inclusive catalog filtering, added 2026-08-18.** The gap flagged above is
+      closed: `?categoryId=` on the public catalog (`GET .../products`, `.../products/facets`)
+      now matches the requested category **and every descendant**, not an exact id match —
+      browsing "Electronics" surfaces "Phones" products without the shopper having to know
+      "Phones" exists. `ProductService.ResolveCategoryAndDescendantIdsAsync` does the same
+      flat-collection tree walk `CategoryService.GetTreeAsync` does, just flattened to an id set
+      (`HashSet<string>`) instead of a nested tree, then the existing `p.CategoryId == categoryId`
+      predicate became `categoryIds.Contains(p.CategoryId)`. No new endpoint: because facets are
+      computed over "the same filter as the listing" (§9.29's existing promise), `GET
+      .../products/facets`'s `categories` breakdown, once given a parent's id, now naturally
+      returns per-subcategory counts within that parent — that *is* the "subcategory filter"
+      data a category page needs, with no separate mechanism invented for it. Picking a child
+      category from that breakdown narrows back down to an exact match, same as before.
 - [x] **Product variants.** New embedded `ProductVariant` (Id/AttributeSummary/Sku/
       PriceOverride/StockQuantity) on `Product.Variants`, managed via `CreateProductRequest`/
       `UpdateProductRequest`. **Deliberately catalog-only** — Cart/Order still reference a bare
@@ -1288,9 +1298,83 @@ traffic:
 
 ---
 
+### 9.41 Customer profile customization — done (2026-08-17)
+
+Audited what a Customer (the shop's end user, not BackOffice staff) could actually do to their
+own account before this. Answer: rename themselves, change their phone number, and manage
+notification preferences (§9.36) — `UpdateProfileRequest` was `(FullName, Phone)` and nothing
+else, `AppUser.Addresses` existed in the data model but had zero endpoints, there was no
+authenticated password-change (only the token-based forgot/reset flow, which assumes the user is
+already locked out), and no avatar of any kind.
+
+- [x] **Authenticated password change.** `POST /api/auth/me/change-password`
+      `{ currentPassword, newPassword }`, any authenticated role (not Shop-only —
+      `/api/auth/*` is the shared realm, §4). Verifies the current password via the same
+      `IPasswordHasher` the login path uses, then revokes every active `RefreshToken` for that
+      user — the same "something changed, sign out everywhere" behavior as a token-based reset,
+      just without needing a token because the caller already proved who they are.
+- [x] **Avatar.** `AppUser.AvatarUrl` (new field), uploaded via `POST /api/auth/me/avatar`
+      (`multipart/form-data`, same 5 MB limit and jpeg/png/webp/gif whitelist as product images,
+      reusing `IFileStorageService` exactly as `ProductsController` does — files grouped under
+      the caller's `BusinessId`, or a shared `"platform"` bucket for a Tenant-/Platform-level
+      account with no single Business). `DELETE /api/auth/me/avatar` clears it. Both return the
+      enriched `UserSummaryResponse` below.
+- [x] **`UserSummaryResponse` enriched.** Was 7 fields (`Id/FullName/Email/Role/TenantId/
+      BusinessId/Status`); now also carries `Phone`, `AvatarUrl`, `EmailVerifiedAt`,
+      `PhoneVerifiedAt`, `CreatedAt` — all of it already existed on `AppUser`/`BaseEntity`, just
+      wasn't mapped out. One shared `UserSummaryResponse.From(AppUser)` factory now backs every
+      construction site (`UserService.Map`, `AuthTokenIssuer.IssueAsync`) so the two can't drift
+      out of sync the way two independent inline mappers eventually do.
+- [x] **Saved address book**, closing the gap flagged in the previous session. `Address` gained
+      an `Id` (empty/unused on the one-off address snapshotted onto an `Order` at checkout —
+      only meaningful for an entry living in `AppUser.Addresses`). Full CRUD under
+      `/api/shop/account/addresses` (`GET`, `POST`, `PUT /{addressId}`, `DELETE /{addressId}`),
+      Customer-only, scoped from the JWT like the rest of `ShopAccountController`. The first
+      address saved is always the default regardless of what's requested — there is no
+      sensible "no default" state once at least one address exists — and deleting the current
+      default promotes another one automatically rather than leaving the book defaultless.
+      Deliberately **not** wired into checkout itself this pass: `CheckoutRequest.shippingAddress`
+      still takes an inline address, same as before — a "pick a saved address" convenience on
+      the checkout form is a frontend-side lookup against this new list, not a backend change.
+- [ ] **Still not built, and deliberately not faked:** phone verification. `PhoneVerifiedAt`
+      exists on `AppUser` with no writer anywhere — same category as §9.10's "no real email/SMS
+      provider chosen" gap. A phone can't receive a clickable link the way email verification
+      does; it needs an OTP flow behind an SMS provider, and building the endpoint shape without
+      a provider to actually deliver a code would just be a UI that always fails silently.
+
+---
+
 ## 10. Progress Log
 
 Newest entry first. Keep entries short — what happened and why, not a diff.
+
+### 2026-08-18 — Category browsing now includes subcategory products (§9.5)
+Closed the gap flagged in the last two sessions: clicking a parent category (e.g. "Electronics")
+showed nothing from its subcategories ("Phones"), because `ProductService.QueryCatalogAsync`
+matched `?categoryId=` exactly. Added `ResolveCategoryAndDescendantIdsAsync` — walks
+`Category.ParentCategoryId` the same way `CategoryService.GetTreeAsync` does, flattened to an id
+set — and swapped the exact-match predicate for a `Contains` against it. Both `GET .../products`
+and `.../products/facets` share the one filter method, so the fix and its facet counts came for
+free together: browsing a parent category's facets now break down by subcategory automatically,
+which is the data a "subcategory filter" UI needs — no new endpoint. Picking a specific
+subcategory still narrows to an exact match, since a leaf category has no descendants to expand
+into. One test added proving the three-way split (parent shows both, child shows only its own).
+
+### 2026-08-17 — Customer profile customization: password change, avatar, address book (§9.41)
+Asked whether Customer users had profile-customization APIs beyond `UpdateProfileRequest`'s
+`FullName`/`Phone`. They didn't have much: no authenticated password change (only the
+token-based forgot/reset flow), no avatar, and — closing the gap flagged in the previous
+session — `AppUser.Addresses` still had zero endpoints despite existing in the data model.
+Added all three: `POST /api/auth/me/change-password` (verifies current password, revokes every
+session on success — mirrors the existing reset-password "something changed" behavior);
+`POST`/`DELETE /api/auth/me/avatar` reusing `IFileStorageService` exactly as product images do;
+and full address-book CRUD under `/api/shop/account/addresses`, with `Address` gaining an `Id`
+(meaningful only for a saved-book entry, unused on the one-off address an order snapshots at
+checkout). `UserSummaryResponse` grew from 7 fields to include `Phone`/`AvatarUrl`/
+`EmailVerifiedAt`/`PhoneVerifiedAt`/`CreatedAt`, backed by one shared `.From(AppUser)` factory so
+its two construction sites (`UserService`, `AuthTokenIssuer`) can't drift apart. Left alone on
+purpose: phone verification, since there's no SMS provider to deliver an OTP to — same "not
+inventing infrastructure without a chosen vendor" rule §9.10 already applies to email.
 
 ### 2026-08-17 — Branded HTML email templates for every send point (§9.10)
 Asked for "professional standard" templates for every email the platform sends, with the

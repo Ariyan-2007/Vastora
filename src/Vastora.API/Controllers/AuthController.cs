@@ -14,8 +14,17 @@ public class AuthController(
     ICurrentUserContext currentUser,
     IAuthService authService,
     IUserService userService,
-    IPrivacyService privacyService) : VastoraControllerBase(currentUser)
+    IPrivacyService privacyService,
+    IFileStorageService fileStorage) : VastoraControllerBase(currentUser)
 {
+    private static readonly Dictionary<string, string> AllowedAvatarContentTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["image/jpeg"] = ".jpg",
+        ["image/png"] = ".png",
+        ["image/webp"] = ".webp",
+        ["image/gif"] = ".gif"
+    };
+
     [HttpPost("login")]
     [AllowAnonymous]
     public async Task<ActionResult<AuthResponse>> Login(BackOfficeLoginRequest request, CancellationToken ct)
@@ -106,6 +115,49 @@ public class AuthController(
     public async Task<ActionResult<UserSummaryResponse>> UpdateMe(UpdateProfileRequest request, CancellationToken ct)
     {
         var result = await userService.UpdateProfileAsync(CurrentUser.UserId, request, ct);
+        return Ok(result);
+    }
+
+    /// <summary>Authenticated self-service change — distinct from the token-based forgot/reset flow (§4). Revokes every active session on success.</summary>
+    [HttpPost("me/change-password")]
+    [Authorize]
+    public async Task<IActionResult> ChangePassword(ChangePasswordRequest request, CancellationToken ct)
+    {
+        await authService.ChangePasswordAsync(CurrentUser.UserId, request.CurrentPassword, request.NewPassword, ct);
+        return NoContent();
+    }
+
+    /// <summary>Local disk storage — see IFileStorageService. Same content-type whitelist/size limit as product images.</summary>
+    [HttpPost("me/avatar")]
+    [Authorize]
+    [RequestSizeLimit(5 * 1024 * 1024)]
+    public async Task<ActionResult<UserSummaryResponse>> UploadAvatar(IFormFile file, CancellationToken ct)
+    {
+        if (file.Length == 0)
+        {
+            return BadRequest("File is empty.");
+        }
+
+        if (!AllowedAvatarContentTypes.TryGetValue(file.ContentType, out var extension))
+        {
+            return BadRequest("Unsupported image type. Allowed: image/jpeg, image/png, image/webp, image/gif.");
+        }
+
+        await using var stream = file.OpenReadStream();
+        // Files are grouped by Business for storage; a Tenant-/Platform-level account (no single
+        // Business) falls back to a shared bucket rather than failing to upload at all.
+        var storageScope = string.IsNullOrEmpty(CurrentUser.BusinessId) ? "platform" : CurrentUser.BusinessId;
+        var url = await fileStorage.SaveAsync(storageScope, stream, extension, ct);
+
+        var result = await userService.UpdateAvatarAsync(CurrentUser.UserId, url, ct);
+        return Ok(result);
+    }
+
+    [HttpDelete("me/avatar")]
+    [Authorize]
+    public async Task<ActionResult<UserSummaryResponse>> RemoveAvatar(CancellationToken ct)
+    {
+        var result = await userService.RemoveAvatarAsync(CurrentUser.UserId, ct);
         return Ok(result);
     }
 

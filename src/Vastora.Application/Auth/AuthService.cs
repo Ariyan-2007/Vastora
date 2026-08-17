@@ -175,6 +175,30 @@ public class AuthService(
         }
     }
 
+    public async Task ChangePasswordAsync(string userId, string currentPassword, string newPassword, CancellationToken ct = default)
+    {
+        var user = await users.GetByIdAsync(userId, ct)
+            ?? throw new NotFoundException(nameof(AppUser), userId);
+
+        if (!passwordHasher.Verify(currentPassword, user.PasswordHash))
+        {
+            throw new UnauthorizedAppException("Current password is incorrect.");
+        }
+
+        user.PasswordHash = passwordHasher.Hash(newPassword);
+        user.UpdatedAt = DateTime.UtcNow;
+        await users.UpdateAsync(user, ct);
+
+        // Same "something may be compromised" signal as a token-based reset — sign out
+        // everywhere, including the session that made this change, forcing a fresh login.
+        var activeSessions = await refreshTokens.FindAsync(t => t.UserId == user.Id && t.RevokedAt == null, ct);
+        foreach (var session in activeSessions)
+        {
+            session.RevokedAt = DateTime.UtcNow;
+            await refreshTokens.UpdateAsync(session, ct);
+        }
+    }
+
     public async Task RequestEmailVerificationAsync(string userId, CancellationToken ct = default)
     {
         var user = await users.GetByIdAsync(userId, ct)

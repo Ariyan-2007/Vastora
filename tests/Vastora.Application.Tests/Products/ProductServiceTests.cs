@@ -8,11 +8,12 @@ namespace Vastora.Application.Tests.Products;
 
 public class ProductServiceTests
 {
-    private static (ProductService Service, FakeMongoRepository<Product> Products, FakeMongoRepository<TenantAccount> Tenants) Create()
+    private static (ProductService Service, FakeMongoRepository<Product> Products, FakeMongoRepository<TenantAccount> Tenants, FakeMongoRepository<Category> Categories) Create()
     {
         var products = new FakeMongoRepository<Product>();
         var tenants = new FakeMongoRepository<TenantAccount>();
-        return (new ProductService(products, tenants), products, tenants);
+        var categories = new FakeMongoRepository<Category>();
+        return (new ProductService(products, tenants, categories), products, tenants, categories);
     }
 
     private static CreateProductRequest ValidRequest(string name = "Widget") =>
@@ -21,7 +22,7 @@ public class ProductServiceTests
     [Fact]
     public async Task CreateAsync_RejectsOnceBusinessHitsPlanProductLimit()
     {
-        var (service, products, tenants) = Create();
+        var (service, products, tenants, _) = Create();
         var tenant = tenants.Seed(new TenantAccount { Plan = SubscriptionPlan.Trial })[0]; // limit: 20 products/business
         for (var i = 0; i < 20; i++)
         {
@@ -37,7 +38,7 @@ public class ProductServiceTests
     [Fact]
     public async Task CreateAsync_GeneratesIdsForNewVariants()
     {
-        var (service, _, tenants) = Create();
+        var (service, _, tenants, _) = Create();
         var tenant = tenants.Seed(new TenantAccount { Plan = SubscriptionPlan.Enterprise })[0];
         var request = ValidRequest() with
         {
@@ -54,7 +55,7 @@ public class ProductServiceTests
     [Fact]
     public async Task GetPublicCatalogAsync_FiltersByCategoryAndSearch_AndExcludesNonActive()
     {
-        var (service, products, tenants) = Create();
+        var (service, products, tenants, _) = Create();
         var tenant = tenants.Seed(new TenantAccount { Plan = SubscriptionPlan.Enterprise })[0];
         products.Seed(
             new Product { TenantId = tenant.Id, BusinessId = "biz-1", CategoryId = "cat-1", Name = "Red Shoe", Status = ProductStatus.Active },
@@ -73,7 +74,7 @@ public class ProductServiceTests
     [Fact]
     public async Task GetPublicCatalogAsync_WithholdsAnActiveProductUntilItsPublishWindowOpens()
     {
-        var (service, products, tenants) = Create();
+        var (service, products, tenants, _) = Create();
         var tenant = tenants.Seed(new TenantAccount { Plan = SubscriptionPlan.Enterprise })[0];
         products.Seed(
             new Product { TenantId = tenant.Id, BusinessId = "biz-1", Name = "Live now", Status = ProductStatus.Active },
@@ -90,7 +91,7 @@ public class ProductServiceTests
     [Fact]
     public async Task GetPublicCatalogAsync_StripsCostPriceFromThePublicProjection()
     {
-        var (service, products, tenants) = Create();
+        var (service, products, tenants, _) = Create();
         var tenant = tenants.Seed(new TenantAccount { Plan = SubscriptionPlan.Enterprise })[0];
         var seeded = products.Seed(new Product
         {
@@ -111,7 +112,7 @@ public class ProductServiceTests
     [Fact]
     public async Task GetPublicCatalogAsync_SortsByPriceAndByRelevance()
     {
-        var (service, products, tenants) = Create();
+        var (service, products, tenants, _) = Create();
         var tenant = tenants.Seed(new TenantAccount { Plan = SubscriptionPlan.Enterprise })[0];
         products.Seed(
             new Product { TenantId = tenant.Id, BusinessId = "biz-1", Name = "Cheap", Status = ProductStatus.Active, Price = 5m, SortWeight = 9 },
@@ -129,7 +130,7 @@ public class ProductServiceTests
     [Fact]
     public async Task GetCatalogFacetsAsync_CountsBrandsAndPriceRangeOverTheSameFilterAsTheListing()
     {
-        var (service, products, tenants) = Create();
+        var (service, products, tenants, _) = Create();
         var tenant = tenants.Seed(new TenantAccount { Plan = SubscriptionPlan.Enterprise })[0];
         products.Seed(
             new Product { TenantId = tenant.Id, BusinessId = "biz-1", Name = "A", Status = ProductStatus.Active, Price = 10m, Brand = "Acme", Tags = ["sale"] },
@@ -146,9 +147,32 @@ public class ProductServiceTests
     }
 
     [Fact]
+    public async Task GetPublicCatalogAsync_FilteringByAParentCategory_IncludesSubcategoryProducts()
+    {
+        var (service, products, tenants, categories) = Create();
+        var tenant = tenants.Seed(new TenantAccount { Plan = SubscriptionPlan.Enterprise })[0];
+        var electronics = categories.Seed(new Category { BusinessId = "biz-1", Name = "Electronics", ParentCategoryId = null })[^1];
+        var phones = categories.Seed(new Category { BusinessId = "biz-1", Name = "Phones", ParentCategoryId = electronics.Id })[^1];
+        categories.Seed(new Category { BusinessId = "biz-1", Name = "Clothing", ParentCategoryId = null });
+        products.Seed(
+            new Product { TenantId = tenant.Id, BusinessId = "biz-1", CategoryId = electronics.Id, Name = "TV", Status = ProductStatus.Active },
+            new Product { TenantId = tenant.Id, BusinessId = "biz-1", CategoryId = phones.Id, Name = "Handset", Status = ProductStatus.Active },
+            new Product { TenantId = tenant.Id, BusinessId = "biz-1", CategoryId = "cat-clothing", Name = "Shirt", Status = ProductStatus.Active });
+
+        var byParent = await service.GetPublicCatalogAsync("biz-1", new CatalogQuery(CategoryId: electronics.Id), CancellationToken.None);
+        var bySubcategory = await service.GetPublicCatalogAsync("biz-1", new CatalogQuery(CategoryId: phones.Id), CancellationToken.None);
+
+        Assert.Equal(2, byParent.Items.Count); // both "TV" (direct) and "Handset" (under Phones)
+        Assert.Contains(byParent.Items, p => p.Name == "TV");
+        Assert.Contains(byParent.Items, p => p.Name == "Handset");
+        Assert.Single(bySubcategory.Items); // picking the subcategory itself narrows back down
+        Assert.Equal("Handset", bySubcategory.Items[0].Name);
+    }
+
+    [Fact]
     public async Task AddImageAsync_AppendsToImagesList()
     {
-        var (service, products, tenants) = Create();
+        var (service, products, tenants, _) = Create();
         var tenant = tenants.Seed(new TenantAccount())[0];
         var product = products.Seed(new Product { TenantId = tenant.Id, BusinessId = "biz-1" })[0];
 
