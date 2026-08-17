@@ -51,6 +51,9 @@ public interface IMongoRepository<T> where T : BaseEntity
     /// <summary>Soft delete — flags IsDeleted/DeletedAt and hides the document from every read.</summary>
     Task DeleteAsync(string id, string? deletedByUserId = null, CancellationToken ct = default);
 
+    /// <summary>Soft delete for every document matching <paramref name="predicate"/> — bulk counterpart to <see cref="DeleteAsync"/>.</summary>
+    Task<long> DeleteManyAsync(Expression<Func<T, bool>> predicate, string? deletedByUserId = null, CancellationToken ct = default);
+
     /// <summary>Genuinely removes the document. For expired tokens and idempotency records, not business data.</summary>
     Task HardDeleteAsync(string id, CancellationToken ct = default);
 

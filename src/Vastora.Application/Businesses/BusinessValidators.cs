@@ -21,3 +21,11 @@ public class UpdateBusinessRequestValidator : AbstractValidator<UpdateBusinessRe
         RuleFor(x => x.Currency).NotEmpty().Length(3);
     }
 }
+
+public class WipeBusinessRequestValidator : AbstractValidator<WipeBusinessRequest>
+{
+    public WipeBusinessRequestValidator()
+    {
+        RuleFor(x => x.ConfirmSlug).NotEmpty();
+    }
+}

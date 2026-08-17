@@ -219,6 +219,13 @@ app.UseRateLimiter();
 
 app.MapHealthChecks("/health");
 
+// Platform console (VASTORA_BLUEPRINT.md's "Platform console — not yet built as UI") — a static,
+// no-build-step page at /platform that drives PlatformController. The page itself has no server-side
+// gate (same as any login screen); every action it takes still goes through the normal JWT + the
+// [Authorize(Roles = PlatformSuperAdmin)] check on the API, so serving the HTML publicly is safe.
+app.UseDefaultFiles();
+app.UseStaticFiles();
+
 // Serves whatever LocalFileStorageService wrote (§9.5, product image uploads) — physical path
 // must match LocalFileStorageService's UploadsRoot exactly. Public, no auth: product images are
 // meant to be publicly viewable, same as any other product data on the public Shop.

@@ -119,6 +119,19 @@ public class FakeMongoRepository<T> : IMongoRepository<T> where T : BaseEntity
         return Task.CompletedTask;
     }
 
+    public Task<long> DeleteManyAsync(Expression<Func<T, bool>> predicate, string? deletedByUserId = null, CancellationToken ct = default)
+    {
+        var matched = Live.Where(predicate.Compile()).ToList();
+        foreach (var entity in matched)
+        {
+            entity.IsDeleted = true;
+            entity.DeletedAt = DateTime.UtcNow;
+            entity.DeletedByUserId = deletedByUserId;
+        }
+
+        return Task.FromResult((long)matched.Count);
+    }
+
     public Task HardDeleteAsync(string id, CancellationToken ct = default)
     {
         _items.RemoveAll(e => e.Id == id);

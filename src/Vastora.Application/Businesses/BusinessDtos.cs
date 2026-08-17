@@ -62,3 +62,10 @@ public record UpdateBusinessRequest(
     bool? GuestCheckoutEnabled = null);
 
 public record UpdateDeliveryModuleRequest(bool Enabled);
+
+/// <summary>
+/// Platform-only. <see cref="ConfirmSlug"/> must match the target Business's slug exactly — the
+/// same "type the name to confirm" gate as GitHub repo deletion — so a wipe can't happen from a
+/// stray click on the wrong row.
+/// </summary>
+public record WipeBusinessRequest(string ConfirmSlug);

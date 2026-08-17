@@ -122,6 +122,18 @@ public class MongoRepository<T> : IMongoRepository<T> where T : BaseEntity
         await _collection.UpdateOneAsync(LiveById(id), update, cancellationToken: ct);
     }
 
+    public async Task<long> DeleteManyAsync(Expression<Func<T, bool>> predicate, string? deletedByUserId = null, CancellationToken ct = default)
+    {
+        var update = Builders<T>.Update
+            .Set(e => e.IsDeleted, true)
+            .Set(e => e.DeletedAt, DateTime.UtcNow)
+            .Set(e => e.DeletedByUserId, deletedByUserId)
+            .Set(e => e.UpdatedAt, DateTime.UtcNow);
+
+        var result = await _collection.UpdateManyAsync(Live(predicate), update, cancellationToken: ct);
+        return result.ModifiedCount;
+    }
+
     public async Task HardDeleteAsync(string id, CancellationToken ct = default) =>
         await _collection.DeleteOneAsync(e => e.Id == id, ct);
 

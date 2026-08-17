@@ -43,6 +43,7 @@ public static class DependencyInjection
         services.AddScoped<IAuthService, AuthService>();
         services.AddScoped<ITenantService, TenantService>();
         services.AddScoped<IBusinessService, BusinessService>();
+        services.AddScoped<IBusinessWipeService, BusinessWipeService>();
         services.AddScoped<IUserService, UserService>();
         services.AddScoped<ICategoryService, CategoryService>();
         services.AddScoped<IProductService, ProductService>();
