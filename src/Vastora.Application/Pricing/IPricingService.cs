@@ -25,4 +25,15 @@ public interface IPricingService
         PricingContext context,
         IReadOnlyList<ResolvedLine> lines,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// §9.43. Public, currently-live coupon and promotion codes worth showing a shopper before
+    /// they've typed anything — "shown where applicable" rather than requiring them to already
+    /// know a code exists. Filtered down to what <paramref name="subtotal"/> can actually
+    /// qualify for on <c>MinOrderAmount</c> alone; applying still runs the full check (customer
+    /// group, first-order-only, scope) the same way it always did, so this is a helpful shortlist,
+    /// not a second source of truth for eligibility.
+    /// </summary>
+    Task<List<AvailableOfferResponse>> GetAvailableOffersAsync(
+        string businessId, decimal subtotal, CancellationToken ct = default);
 }

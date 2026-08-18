@@ -22,6 +22,8 @@ public interface IStoreCreditService
         string note,
         string? referenceOrderId = null,
         string? referenceReturnId = null,
+        /// <summary>§9.43. Set only on a promotional grant meant to lapse; leave null for a refund settlement, which should never expire.</summary>
+        DateTime? expiresAt = null,
         CancellationToken ct = default);
 
     /// <summary>Spends up to <paramref name="requested"/>, capped at the live balance. Returns what was actually spent.</summary>

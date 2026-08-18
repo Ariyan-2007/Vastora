@@ -14,6 +14,19 @@ public enum DiscountType
     FixedAmount = 2
 }
 
+/// <summary>
+/// §9.43. Public is surfaced by the storefront's "available offers" listing (`Coupon`/`Promotion`
+/// codes a shopper can discover on their own); Hidden works only when the exact code is entered —
+/// it never appears in that listing. The targeted-campaign case: a code emailed to specific
+/// customers or a segment (§9.43's discount-email flow) that a shopper cannot find just by
+/// browsing checkout.
+/// </summary>
+public enum DiscountVisibility
+{
+    Public = 1,
+    Hidden = 2
+}
+
 /// <summary>§9.15 — every write to Product.StockQuantity is logged as one of these.</summary>
 public enum StockMovementType
 {

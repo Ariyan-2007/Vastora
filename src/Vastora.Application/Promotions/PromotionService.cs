@@ -2,6 +2,7 @@ using Vastora.Application.Common;
 using Vastora.Application.Common.Exceptions;
 using Vastora.Application.Common.Interfaces;
 using Vastora.Domain.Entities;
+using Vastora.Domain.Enums;
 
 namespace Vastora.Application.Promotions;
 
@@ -191,6 +192,13 @@ public class PromotionService(
         return result.Map(Map);
     }
 
+    public async Task<List<PromotionResponse>> GetPublicLiveAsync(string businessId, CancellationToken ct = default)
+    {
+        var candidates = await promotions.FindAsync(
+            p => p.BusinessId == businessId && p.IsActive && p.Code != null && p.Visibility == DiscountVisibility.Public, ct);
+        return [.. candidates.Where(p => p.IsLiveNow(DateTime.UtcNow)).OrderBy(p => p.Priority).Select(Map)];
+    }
+
     public async Task<PromotionResponse> CreateAsync(string tenantId, string businessId, CreatePromotionRequest request, CancellationToken ct = default)
     {
         await EnsureCodeIsFreeAsync(businessId, request.Code, null, ct);
@@ -262,6 +270,7 @@ public class PromotionService(
         promotion.StartsAt = request.StartsAt;
         promotion.EndsAt = request.EndsAt;
         promotion.IsActive = request.IsActive;
+        promotion.Visibility = request.Visibility;
     }
 
     private async Task<Promotion> GetScopedAsync(string tenantId, string businessId, string promotionId, CancellationToken ct)
@@ -279,5 +288,5 @@ public class PromotionService(
         p.Id, p.Name, p.Code, p.Effect, p.Scope, p.Value, p.ProductIds, p.CategoryIds,
         p.BuyQuantity, p.GetQuantity, p.MinOrderAmount, p.CustomerGroupIds, p.FirstOrderOnly,
         p.MaxUses, p.UsedCount, p.MaxUsesPerCustomer, p.Priority, p.Stackable,
-        p.StartsAt, p.EndsAt, p.IsActive, p.IsLiveNow(DateTime.UtcNow));
+        p.StartsAt, p.EndsAt, p.IsActive, p.IsLiveNow(DateTime.UtcNow), p.Visibility);
 }

@@ -379,6 +379,11 @@ the structured facet filters over free-text search wherever the UI allows it.
 | POST | `/api/shop/cart/coupon?businessId=` | `{ code }` | `CartResponse` |
 | POST | `/api/shop/cart/promotions?businessId=` | `{ code }` | `CartResponse` — **stackable**, unlike the single coupon |
 | DELETE | `/api/shop/cart/promotions/{code}?businessId=` | — | `CartResponse` |
+| POST | `/api/shop/cart/gift-cards?businessId=` | `{ code }` | `CartResponse` — added 2026-08-18, §9.43 |
+| DELETE | `/api/shop/cart/gift-cards/{code}?businessId=` | — | `CartResponse` — added 2026-08-18, §9.43 |
+| PUT | `/api/shop/cart/store-credit` | `{ useStoreCredit }` | `CartResponse` — **Customer only**, added 2026-08-18, §9.43 |
+| PUT | `/api/shop/cart/fulfillment-method?businessId=` | `{ fulfillmentMethod }` | `CartResponse` — Guest and Customer, added 2026-08-18, §9.44 |
+| GET | `/api/shop/cart/available-offers?businessId=` | — | `AvailableOfferResponse[]` — added 2026-08-18, §9.43; see §6.6 |
 | POST | `/api/shop/cart/merge?guestToken=` | — | `CartResponse` — **Customer only**, call right after login |
 | DELETE | `/api/shop/cart?businessId=` | — | 204 (clears the whole cart) |
 
@@ -414,6 +419,20 @@ type CartResponse = {
   currency: string;
   itemCount: number;
   guestToken: string | null;       // present only for guest carts — store it
+  // --- added 2026-08-18, §9.43 — see §6.6 ---
+  giftCardCodes: string[];         // codes applied to the cart itself, not just at final checkout
+  giftCardTotal: number;           // what those codes actually cover at the current total
+  useStoreCredit: boolean;         // this cart's opt-in state, set via PUT .../store-credit
+  storeCreditApplied: number;
+  amountDue: number;               // subtotal − discountTotal + deliveryFee (tax still excluded — needs an address) − giftCardTotal − storeCreditApplied — the number checkout will actually collect
+  // --- added 2026-08-18, §9.44 ---
+  fulfillmentMethod: "Delivery" | "Pickup" | "ExternalCourier" | "Digital"; // this cart's preview setting, set via PUT .../fulfillment-method — defaults to "Delivery"
+  deliveryFee: number;             // 0 whenever fulfillmentMethod is "Pickup" or "Digital" — see note below
+  shippingMethodName: string | null;
+  shippingOptions: {               // §9.20 — same shape checkout's shippingOptions uses; always empty for Pickup/Digital
+    zoneId: string; rateId: string; name: string; price: number;
+    estimatedDaysMin: number | null; estimatedDaysMax: number | null;
+  }[];
 };
 ```
 
@@ -422,9 +441,44 @@ type CartResponse = {
 > amount. It is now priced by the same engine checkout uses, so `discounts` and `discountTotal`
 > are real numbers you can render directly.
 
-`estimatedTotal` deliberately excludes shipping and tax: neither can be known before a delivery
-address is. For the full number, call `POST /api/shop/orders/preview` (§6.4) once you have one —
-showing a confident total that then changes at checkout is worse than showing none.
+> **Gift cards and store credit used to be checkout-only, blind.** `giftCardCodes` could be set on
+> the cart but were never priced back into this response — a shopper who applied one saw no
+> discount until checkout actually charged them. `giftCardTotal`/`storeCreditApplied`/`amountDue`
+> now come from the same pricing pass `discounts`/`discountTotal` always did (§9.43) — render them
+> the same way, live, from `GET /api/shop/cart`, not just from `CheckoutPreviewResponse`.
+
+`estimatedTotal` deliberately excludes delivery fee and tax: `estimatedTotal = subtotal −
+discountTotal`, nothing else. Tax genuinely can't be known before a delivery address is — for the
+full number including tax, call `POST /api/shop/orders/preview` (§6.4) once you have one, same as
+before. **Delivery fee is different** — `deliveryFee` (added 2026-08-18, §9.44) *is* resolvable
+before an address, from the business's shipping zones or its flat default rate, so it's its own
+field rather than bundled silently into a total that would then change again. Render it
+separately: `subtotal − discountTotal + deliveryFee` if you want a running total that includes it,
+or just show the `deliveryFee` line item next to the discount lines you're already rendering.
+`amountDue` (§9.43/§9.44) already includes it for you if all you want is one final number.
+
+**Fulfillment method decides whether a delivery fee applies at all — set it before you show one.**
+`fulfillmentMethod` defaults to `"Delivery"` on a fresh cart. Call
+`PUT /api/shop/cart/fulfillment-method` the moment the shopper picks "Ship to me" vs "Pick up
+in-store" (a toggle on the cart or checkout page, not a checkout-only field) so `deliveryFee`/
+`shippingOptions` reflect the real choice immediately:
+- **`"Delivery"` / `"ExternalCourier"`** — `deliveryFee` and `shippingOptions` are populated
+  normally, exactly as before this field existed.
+- **`"Pickup"` / `"Digital"`** — `deliveryFee` is always `0` and `shippingOptions` is always
+  `[]`. **Don't render a delivery-fee row at all for these** rather than rendering "$0.00
+  delivery" — `fulfillmentMethod` is what tells you *why* it's zero (no delivery is happening,
+  not that delivery happens to be free). Hide the shipping-method selector entirely too; there's
+  nothing in `shippingOptions` to pick from.
+
+This is **preview-only**, mirroring how `useStoreCredit` already works (§6.6): setting it on the
+cart makes `GET /api/shop/cart` honest about what will happen, but it does not by itself decide
+what's charged. `POST /api/shop/orders/checkout`'s own `CheckoutRequest.fulfillmentMethod` (§6.4)
+is what's actually billed — **send the same value there that you set on the cart**, or the
+customer can see "Pickup, no delivery fee" through checkout and then be charged a delivery fee
+anyway because the checkout call defaulted back to `"Delivery"`. The one thing `CheckoutRequest`
+still requires unconditionally, even for `"Pickup"`, is `shippingAddress` — the API doesn't yet
+let it go from a Pickup checkout, so keep collecting some address on that form regardless of which
+fulfillment method is selected.
 
 One cart per customer (or per guest token) per Business, server-persisted — safe to always `GET`
 on page load rather than trusting local state, though caching the last response for snappy UI
@@ -602,6 +656,16 @@ to hide delivery ETAs, but the order can now record *how* it is actually being f
 externally shipped order carries `carrierName`/`trackingNumber`/`trackingUrl` once staff fill
 them in — render those on the order detail page as a tracking link.
 
+> **Correction, 2026-08-18 (§9.44): `fulfillmentMethod: "Pickup"` did not actually drop the
+> delivery fee before this date, despite the paragraph above.** It was recorded on the order as a
+> label, but `deliveryFee` was still resolved from the shipping zones / `defaultDeliveryFee`
+> exactly as if it were `"Delivery"` — a real billing bug, now fixed. No `CheckoutRequest` field
+> changed and no frontend code needs to change for checkout itself; a Pickup order placed today
+> correctly prices at `deliveryFee: 0`. What *is* new is the ability to preview it: see §6.3's
+> `fulfillmentMethod`/`deliveryFee` on `CartResponse` and `PUT /api/shop/cart/fulfillment-method`
+> — set that before checkout so the cart already shows `deliveryFee: 0` for a Pickup order,
+> instead of a shopper only finding out at the final `preview`/`checkout` call.
+
 **No payment gateway exists.** Checkout immediately creates the order with
 `paymentStatus: "Pending"` and `status: "Processing"` — effectively a cash-on-delivery flow
 today. Don't build a payment form expecting a gateway redirect/webhook; there's nothing on the
@@ -660,10 +724,11 @@ type WishlistItemResponse = {
   inStock: boolean; addedAt: string;
 };
 type StoreCreditBalanceResponse = {
-  balance: number; currency: string;
+  balance: number; currency: string;   // balance already excludes any entry whose expiresAt has passed
   recentEntries: { id: string; amount: number; currency: string;
                    reason: "GiftCardRedemption" | "RefundToCredit" | "LoyaltyReward" | "ManualAdjustment" | "Spent";
-                   note: string; referenceOrderId: string | null; createdAt: string }[];
+                   note: string; referenceOrderId: string | null; createdAt: string;
+                   expiresAt: string | null }[]; // added 2026-08-18, §9.43 — null means this entry never expires
 };
 type GiftCardBalanceResponse = {
   codeSuffix: string; remainingBalance: number; currency: string;
@@ -718,6 +783,97 @@ Still true, and still a frontend decision, not a backend gap: checkout itself is
 `GET .../addresses` and pre-filling the inline fields from whichever one the shopper picks (the
 one with `isDefault: true` is the sensible pre-selection) — the backend was never taught to
 accept an address *id* at checkout, only a full address object.
+
+### 6.6 Coupons, Gift Cards & Store Credit — added 2026-08-18, §9.43
+
+Every discount feature in one place: coupon/promotion codes, gift cards, store credit, and how
+they combine. Nothing here is a separate pricing engine — every one of these feeds the same
+`IPricingService` pass that produces `CartResponse` (§6.3) and `CheckoutPreviewResponse` (§6.4),
+so what you show pre-checkout and what the customer is actually charged cannot disagree.
+
+**The four discount surfaces:**
+
+| Surface | What it is | Applied via |
+|---|---|---|
+| Coupon | One legacy percentage/fixed code, single-use per cart | `POST/DELETE .../cart/coupon` (§6.3) |
+| Promotion | Coded or automatic — BOGO, free shipping, scoped, stackable, group-targeted | `POST/DELETE .../cart/promotions[/{code}]` (§6.3) |
+| Gift card | Stored balance, spent down at checkout | `POST/DELETE .../cart/gift-cards[/{code}]` (below) |
+| Store credit | Per-customer ledger balance (refunds, promotional grants) | `PUT .../cart/store-credit` (below) |
+
+A coupon and any stacked promotions apply first, against the subtotal; gift cards and store
+credit apply last, against the post-tax total. See §6.4's `CheckoutPreviewResponse` for the full
+order of operations.
+
+#### Showing codes where applicable — `GET /api/shop/cart/available-offers?businessId=`
+
+The industry-grade pattern this replaces "does the customer already know the code" with: a code
+is either **discoverable** (list it — a banner, an "Available offers" panel at checkout) or
+**targeted** (never list it — the customer only learns it exists because you told them, e.g. by
+email). That's the `Public`/`Hidden` visibility every `Coupon` and coded `Promotion` now carries.
+
+```ts
+type AvailableOfferResponse = {
+  source: "Coupon" | "Promotion";
+  code: string;
+  label: string;               // the promotion's Name, or the coupon code itself
+  summary: string;              // server-formatted: "10% off", "$5 off orders over $50", "Free shipping", "Buy 2, get 1 free"
+  minOrderAmount: number | null;
+  expiresAt: string | null;     // null = never expires
+};
+```
+
+Call this whenever the cart changes (or at minimum on the cart/checkout page mount) and render
+each offer with an "Apply" action that calls the matching `POST .../cart/coupon` or
+`.../cart/promotions` endpoint. **Only `Public` codes appear here.** A `Hidden` code — the one a
+customer received by email, not by browsing — is deliberately absent from this list; it still
+applies normally through the exact same `POST` endpoints when the customer types it in. Don't
+build a second "enter a code" input for Hidden codes — there's only ever one apply flow, this
+endpoint just decides what to suggest before the customer types anything.
+
+This is a shortlist, not a guarantee: it filters on `minOrderAmount` against the cart's current
+subtotal, but a code can still fail to apply (wrong customer segment, first-order-only, etc.) —
+handle the `409` from the apply call the same way you already do for a plain wrong/expired code.
+
+#### Gift cards on the cart — `POST/DELETE /api/shop/cart/gift-cards[/{code}]?businessId=`
+
+```ts
+// POST body: { code: string }   →  CartResponse
+// DELETE /api/shop/cart/gift-cards/{code}?businessId=   →  CartResponse
+```
+
+Same shape as applying a coupon (§6.3): the code is validated against the gift-card ledger
+immediately — an unknown, inactive, zero-balance, or expired code is rejected with a `409` right
+here, not silently accepted and discovered wrong at checkout. A cart can hold several gift-card
+codes at once; `CartResponse.giftCardCodes`/`giftCardTotal` (§6.3) reflect all of them combined.
+Checking a code's balance without applying it is still `GET /api/shop/account/gift-cards/{code}`
+(§6.5, Customer only) — use that for a "check your balance" utility separate from checkout.
+
+#### Store credit on the cart — `PUT /api/shop/cart/store-credit`
+
+```ts
+// body: { useStoreCredit: boolean }   →  CartResponse
+```
+
+**Customer only** — a guest has no account and therefore no balance to opt into. A simple
+checkbox: "Use my store credit ($`balance`)". Toggling it on prices the cart with as much of the
+customer's live balance applied as the remaining total allows (`CartResponse.storeCreditApplied`,
+capped automatically — never send an amount, just the boolean); toggling it off removes it from
+the preview immediately. `GET /api/shop/account/store-credit` (§6.5) is still where the balance
+and ledger history come from.
+
+#### Expiry — what "expires" actually means for each surface
+
+| Surface | Expiry field | `null` means |
+|---|---|---|
+| Coupon | `expiresAt` on the coupon itself | Never expires (an evergreen/partner code — added 2026-08-18; previously every coupon was forced to carry a date) |
+| Promotion | `endsAt` | Never expires |
+| Gift card | `expiresAt` on the card | Never expires |
+| Store credit entry | `expiresAt` on the ledger entry | This credit never expires (the default for a refund settlement; a promotional grant can set a real date) |
+
+A store-credit balance already **excludes** any lapsed entry — `GET /api/shop/account/store-credit`
+computes it live, so there is nothing for the frontend to filter. If you want to show "$10 of your
+credit expires in 5 days" as a nudge, read it off `recentEntries[].expiresAt` yourself; the API
+doesn't synthesize that message for you.
 
 ---
 

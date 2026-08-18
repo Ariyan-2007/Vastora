@@ -347,7 +347,7 @@ public class ReturnService(
         {
             await storeCreditService.RecordAsync(
                 entity.TenantId, entity.BusinessId, entity.CustomerUserId, amount,
-                StoreCreditReason.RefundToCredit, $"Return {entity.RmaNumber}", entity.OrderNumber, entity.Id, ct);
+                StoreCreditReason.RefundToCredit, $"Return {entity.RmaNumber}", entity.OrderNumber, entity.Id, ct: ct);
             return;
         }
 

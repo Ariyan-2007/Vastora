@@ -208,8 +208,8 @@ All entities live in `Vastora.Domain.Entities`, inherit `BaseEntity` (`Id`, `Cre
 | `PasswordResetToken` | User | Hashed, expiring (1hr), single-use (`UsedAt`) — same pattern as `RefreshToken` (§9.10). |
 | `Category` | Business | Supports `ParentCategoryId` for subcategories — same collection, no join; `GET .../categories/tree` nests it (§9.5). |
 | `Product` | Business | Price, `CompareAtPrice`, `DiscountPercent`/`DiscountExpiresAt` → `EffectivePrice` computed property. `StockQuantity`/`TrackInventory` (mutated only via `IInventoryService`, never directly — §9.15). `ReorderThreshold`/`ReorderQuantity` (§9.15b). Embedded `Variants` list (catalog-only, no Cart/Order integration — §9.5). |
-| `Coupon` | Business | Percentage or fixed discount, usage cap, validity window. `IsValidNow` computed property. |
-| `Cart` | Business + Customer | One live cart per customer per business, embedded `CartItem` list, optional coupon code. |
+| `Coupon` | Business | Percentage or fixed discount, usage cap, validity window (`ExpiresAt` nullable since §9.43 — null means it never expires). `Visibility` (§9.43): `Public`/`Hidden`. `IsValidNow` computed property. |
+| `Cart` | Business + Customer | One live cart per customer per business, embedded `CartItem` list, optional coupon code, gift-card codes and a `UseStoreCredit` toggle (§9.43) that now actually feed the priced preview. `FulfillmentMethod` (§9.44, default `Delivery`) — `Pickup`/`Digital` drop the delivery fee and shipping options from the preview entirely. |
 | `Order` | Business | Embedded `OrderItem` snapshot (price/name captured at checkout, immune to later product edits), `StatusHistory` + `PaymentStatusHistory` audit trails, `PaymentStatus` separate from fulfillment `Status` (transition rules enforced — §9.7). |
 | `DeliveryAgentProfile` | Business | Operational stats for a `DeliveryAgent` user — status, balance (credited on delivery — §9.7), level, completed count. |
 | `StockMovement` | Business | One row per `Product.StockQuantity` change — Sale/Restock/Return/Adjustment/DamageWriteOff, signed `QuantityDelta` (§9.15a). |
@@ -224,10 +224,10 @@ where relevant and inherits the soft-delete fields §9.35 added to `BaseEntity`.
 | `Review` | Business | Customer rating of a Product (§9.25). Server-verified purchase, moderation status, merchant reply. Aggregated onto `Product.AverageRating`/`ReviewCount`. |
 | `WishlistItem` | Business + Customer | One saved product per row — not an embedded list — so back-in-stock alerts can query "who wants this?" without scanning users (§9.26). |
 | `ReturnRequest` | Business | RMA aggregate (§9.21): partial line/quantity returns, own lifecycle, restock on `Received`, refund settlement on `Refunded`. |
-| `Promotion` | Business | The general discount rule `Coupon` can't express (§9.23) — automatic/coded, BOGO, free shipping, scoped, group-targeted, per-customer capped. `Coupon` is untouched and still works. |
-| `CustomerGroup` | Business | Named customer segment with a blanket group discount (§9.23). Membership lives here; `AppUser.CustomerGroupIds` is only a cache. |
+| `Promotion` | Business | The general discount rule `Coupon` can't express (§9.23) — automatic/coded, BOGO, free shipping, scoped, group-targeted, per-customer capped. `Coupon` is untouched and still works. `Visibility` (§9.43): `Public`/`Hidden`, same as `Coupon`. |
+| `CustomerGroup` | Business | Named customer segment with a blanket group discount (§9.23). Membership lives here; `AppUser.CustomerGroupIds` is only a cache. Also the segment a §9.43 targeted discount email can address. |
 | `GiftCard` | Business | Hashed code shown once, drawn down at checkout. A **liability** until redeemed, not revenue (§9.24). |
-| `StoreCreditEntry` | Business + Customer | Append-only credit ledger; the balance is always the sum of entries, never a mutable field (§9.24). |
+| `StoreCreditEntry` | Business + Customer | Append-only credit ledger; the balance is always the sum of entries, never a mutable field (§9.24). `ExpiresAt` (§9.43, nullable) — only meaningful on a positive/credit entry; a refund settlement leaves it null (never expires), a promotional grant can set it. Computed live via `CountsTowardBalance`, no sweep. |
 | `ShippingZone` | Business | Destination bands with subtotal/weight rate tables, replacing the flat `DefaultDeliveryFee` (§9.20). |
 | `ContentBlock` | Business | Polymorphic storefront content: banners, pages (Terms/Privacy), nav items, articles (§9.30). |
 | `EmailVerificationToken` | User | Hashed, expiring, single-use — same shape as `PasswordResetToken` (§9.34). |
@@ -370,8 +370,12 @@ via a `CatalogQuery` querystring rather than two loose parameters.
   guest sends `X-Cart-Token` (minted server-side on first write, returned as `guestToken`) plus
   `?businessId=`. An authenticated identity always wins over any token that's also present.
 - `POST/DELETE /api/shop/cart/promotions[/{code}]` — stackable promotion codes, separate from the single legacy coupon.
+- `POST/DELETE /api/shop/cart/gift-cards[/{code}]` — apply/remove a gift card code on the cart itself (§9.43; previously only settable at final checkout, priced nowhere before that).
+- `PUT /api/shop/cart/store-credit` — Customer only; opts the cart in/out of spending store credit, mirroring `CheckoutRequest.UseStoreCredit` (§9.43).
+- `PUT /api/shop/cart/fulfillment-method` — Guest and Customer; sets `Delivery`/`Pickup`/`ExternalCourier`/`Digital` on the cart so its preview reflects the right delivery fee before checkout (§9.44).
+- `GET /api/shop/cart/available-offers` — Public coupon/promotion codes worth showing this shopper now; excludes `Hidden` ones (§9.43).
 - `POST /api/shop/cart/merge?guestToken=` — Customer only; folds the anonymous cart in on login.
-- Cart responses now carry `discounts`, `discountTotal`, `estimatedTotal`, `itemCount` and `currency`.
+- Cart responses now carry `discounts`, `discountTotal`, `estimatedTotal`, `itemCount`, `currency`, (§9.43) `giftCardCodes`, `giftCardTotal`, `useStoreCredit`, `storeCreditApplied`, `amountDue`, and (§9.44) `fulfillmentMethod`, `deliveryFee`, `shippingMethodName`, `shippingOptions`.
 
 **Shop — checkout & orders (§9.17, §9.21, §9.27)**
 - `POST /api/shop/orders/checkout` — now `[AllowAnonymous]`; honours an optional `Idempotency-Key` header.
@@ -405,9 +409,12 @@ via a `CatalogQuery` querystring rather than two loose parameters.
   `.../refund` — refund is Admin-tier, the rest Staff-permitted.
 - `GET .../reviews`, `PATCH .../reviews/{id}/status`, `POST .../reviews/{id}/reply`, `DELETE .../reviews/{id}`.
 
-**BackOffice — merchandising, Admin-tier only (§9.20, §9.23, §9.24, §9.30)**
+**BackOffice — merchandising, Admin-tier only (§9.20, §9.23, §9.24, §9.30, §9.43)**
 - `.../promotions`, `.../customer-groups` (+ `/members`), `.../gift-cards`,
   `.../customers/{id}/store-credit`, `.../shipping-zones`, `.../content` — full CRUD on each.
+- `POST .../discount-emails` — emails a coupon/promotion code to named customers and/or a
+  customer group (§9.43); the delivery mechanism a `Hidden`-visibility code needs, since it never
+  appears in the storefront's available-offers listing on its own.
 
 **BackOffice — catalog, analytics, audit (§9.28, §9.32, §9.35)**
 - `POST .../products/import`, `GET .../products/export` — CSV, upsert keyed on SKU, Admin-tier.
@@ -1376,9 +1383,159 @@ create/update DTOs too, for a frontend that already has a URL and doesn't need t
 
 ---
 
+### 9.43 Discounts unified — visibility, cart-level gift cards/store credit, real expiry — done (2026-08-18)
+
+Audited every discount surface (`Coupon`, `Promotion`, `GiftCard`, `StoreCreditEntry`) against the
+four things a client asked for: one place documenting all of it, every customer-facing API a
+storefront needs actually existing, codes "shown where applicable" with a way to *hide* one behind
+a targeted email instead, and expiry that's actually correct. The engine itself (§9.23, §9.24) was
+already solid — this closed real gaps in wiring and design, it didn't rebuild it.
+
+- [x] **`DiscountVisibility` (`Public`/`Hidden`)** on both `Coupon` and `Promotion`. Public is
+      listed by the new available-offers endpoint below; Hidden only works when the exact code is
+      typed — it never appears there. Nothing about evaluation/redemption changed: a Hidden code
+      is validated and priced exactly like a Public one, `ApplyCouponAsync`/`ApplyPromotionCodeAsync`
+      don't know or care which it is. Visibility governs *discoverability*, not *validity*.
+- [x] **`GET /api/shop/cart/available-offers`** (`ICartService.GetAvailableOffersAsync` →
+      `IPricingService.GetAvailableOffersAsync`) — "shown where applicable": merges
+      `ICouponService.GetPublicActiveAsync` and `IPromotionService.GetPublicLiveAsync`, filtered to
+      what the cart's current subtotal can even qualify for on `MinOrderAmount` (a full
+      customer-group/first-order check still happens when the code is actually applied — this is a
+      shortlist, not a second source of truth). Each `AvailableOfferResponse` carries a
+      server-computed `Summary` ("10% off", "$5 off orders over $50", "Free shipping", "Buy 2, get 1
+      free") so every client describes an offer identically rather than re-deriving the wording
+      from `DiscountType`/`PromotionEffect` itself.
+- [x] **`POST /api/businesses/{businessId}/discount-emails`** (new `IDiscountEmailService`) — the
+      delivery mechanism a Hidden code needs, since visibility alone doesn't tell anyone it exists.
+      Resolves a code against `Coupon` then `Promotion`, unions an explicit `CustomerUserIds` list
+      with a `CustomerGroupId`'s membership, and sends through the existing `INotificationService`/
+      `EmailTemplates` pipeline (new `EmailTemplates.DiscountCode`) — respecting
+      `NotificationPreferences.MarketingEmail` exactly like every other marketing send (§9.36).
+      "The customer can only find out by email" is not license to email someone who opted out.
+- [x] **Gift cards and store credit were write-only on the cart before this.**
+      `Cart.GiftCardCodes` and the checkout-only `UseStoreCredit` flag existed, but
+      `CartService.MapAsync` hard-coded an empty gift-card list and `false` into every
+      `PricingContext` it built for a cart preview — a shopper who applied a gift card or opted
+      into store credit saw *no* discount until checkout actually charged them, and could not tell
+      in advance what they'd really owe. Fixed by threading `cart.GiftCardCodes`/`cart.UseStoreCredit`
+      into the same `PricingContext` checkout already used, and adding the endpoints that were
+      missing to actually set them pre-checkout: `POST/DELETE /api/shop/cart/gift-cards[/{code}]`
+      (validated against the ledger via `IGiftCardService.CheckBalanceAsync` before it sticks) and
+      `PUT /api/shop/cart/store-credit`. `CartResponse` now carries `giftCardCodes`, `giftCardTotal`,
+      `useStoreCredit`, `storeCreditApplied` and `amountDue`, so the preview and the charge cannot
+      disagree — the same guarantee §9.22 already gave coupons and promotions.
+- [x] **`Coupon.ExpiresAt` is now nullable.** It was a required `DateTime`, forcing every coupon —
+      including a permanent referral or partner code — to carry an expiry date it didn't actually
+      have, or to be re-issued with a far-future date as a workaround. Null now means what it says:
+      never expires. `IsValidNow` and the create/update validators were updated to match; nothing
+      about an existing coupon's stored `ExpiresAt` changed.
+- [x] **`StoreCreditEntry` gained expiry**, which didn't exist in any form before — every credit
+      was permanent regardless of source, so a "welcome bonus expires in 30 days" promotional grant
+      was not expressible. `ExpiresAt` (nullable) only matters on a positive entry; `RecordAsync`
+      drops it entirely for a debit. Computed live via `StoreCreditEntry.CountsTowardBalance(now)` —
+      the same pattern `Coupon.IsValidNow`/`GiftCard.IsRedeemableNow`/`Promotion.IsLiveNow` already
+      use — so `GetBalanceAsync`/`GetStatementAsync` are correct at read time with **no sweep job**,
+      and the ledger stays genuinely append-only (an expired credit's entry is never mutated or
+      offset, it simply stops counting). A refund settlement (§9.21) still never expires — only a
+      deliberately-timed grant does, via the new optional `expiresAt` on
+      `MerchandisingController.GrantStoreCredit`.
+- [x] Eighteen new tests (93 → 111) across `CouponServiceTests`, `StoreCreditServiceTests`,
+      `PromotionServiceTests` (visibility filtering), `DiscountEmailServiceTests` (union, opt-out,
+      unknown code, no recipients), `CartServiceTests` (the gift-card/store-credit preview fix,
+      proven end-to-end against real `PricingService`) and `PricingServiceAvailableOffersTests`.
+
+---
+
+### 9.44 Cart delivery fee — visible in the preview, and fulfillment-aware — done (2026-08-18)
+
+A client reported the cart response never said anything about delivery fee even after a coupon
+was applied, and asked why a Pickup order would presumably still get charged one. Both turned out
+to be real bugs, not just missing documentation — found while investigating.
+
+- [x] **`CartService.MapAsync` was zeroing the delivery fee, silently, on every call.**
+      `PricingContext.ExplicitDeliveryFee` is `decimal?` specifically so "no override, resolve the
+      real fee" can be expressed as `null` — but the cart-preview call was passing the *literal*
+      `0m`, which `ShippingService.ResolveFeeAsync` treats identically to a staff member
+      deliberately overriding the fee to zero. The business's `DefaultDeliveryFee` and its
+      shipping zones were never even consulted for a cart preview; checkout (a separate call
+      site) was unaffected; only `GET /api/shop/cart` was wrong. Fixed by passing `null`.
+      `CartResponse` also had no field to put a delivery fee on even once resolved correctly —
+      added `deliveryFee`, `shippingMethodName`, and `shippingOptions`, filled from the same
+      `IPricingService.PriceAsync` call `discounts`/`discountTotal` already came from.
+- [x] **`FulfillmentMethod` never reached pricing at all, at either call site.** It existed on
+      `CheckoutRequest` and got stored onto the resulting `Order` as a label, but
+      `OrderService.BuildPricingContext` never passed it into `PricingContext` — so a customer who
+      chose `Pickup` at checkout was charged exactly the same delivery fee a `Delivery` order
+      would have been, because `ShippingService.ResolveFeeAsync` ran unconditionally regardless of
+      what the customer actually selected. This was a real checkout bug, not just a missing cart
+      field. Fixed by threading `request.FulfillmentMethod` through, and by gating
+      `PricingService.PriceAsync`'s shipping-quote/fee resolution on it: `Pickup` and `Digital`
+      (no physical delivery leg) now always price at `deliveryFee = 0` with an empty
+      `shippingOptions` list, never a shipping-zone or `DefaultDeliveryFee` amount; `Delivery` and
+      `ExternalCourier` are unaffected.
+- [x] **`Cart.FulfillmentMethod`** (new, default `Delivery`) plus
+      `PUT /api/shop/cart/fulfillment-method` — lets a shopper declare Pickup *before* checkout so
+      the preview is honest about it, the same relationship `Cart.UseStoreCredit` (§9.43) already
+      has to `CheckoutRequest.UseStoreCredit`: preview-only, and `CheckoutRequest.FulfillmentMethod`
+      remains the one that's actually charged — repeating the same choice there is still required.
+      Deliberately zeroed rather than merely defaulted to `Delivery`-equivalent zero: a `Pickup`
+      cart shows `deliveryFee: 0` for the same reason a `Delivery` cart with genuinely free
+      shipping does, and the two would otherwise be indistinguishable to a frontend that only
+      looks at the number. `fulfillmentMethod` being present on `CartResponse` is what disambiguates
+      "no delivery fee because it's free" from "no delivery fee because there's no delivery".
+- [x] Seven new tests (111 → 118): `PricingServiceFulfillmentTests` (the four `FulfillmentMethod`
+      values, parameterized, proving only `Delivery`/`ExternalCourier` ever charge) and three new
+      `CartServiceTests` cases proving the preview now shows the business's real
+      `DefaultDeliveryFee` and that switching to `Pickup` drops it to zero with no shipping
+      options, where before this session there was no field to even make that assertion against.
+
+Not touched, and worth flagging rather than silently leaving inconsistent: `CheckoutRequest.
+ShippingAddress` is still a required field at checkout even when `FulfillmentMethod` is `Pickup` —
+a customer picking up in-store must still submit a (possibly nominal) address object today. That's
+a separate, smaller gap from the two above and wasn't part of what was reported; flagged here so
+it isn't mistaken for fixed.
+
+---
+
 ## 10. Progress Log
 
 Newest entry first. Keep entries short — what happened and why, not a diff.
+
+### 2026-08-18 — Cart delivery fee visible in the preview, and fulfillment-aware (§9.44)
+A client reported the cart API said nothing about delivery fee, even after a coupon was applied,
+and separately expected a Pickup order to skip it. Investigating turned up two real bugs, not one
+documentation gap: `CartService.MapAsync` was passing the pricing call `0m` instead of `null` for
+`ExplicitDeliveryFee`, which forces the fee to resolve as an explicit zero rather than actually
+consulting `Business.DefaultDeliveryFee` or shipping zones — so the cart preview's delivery fee
+was silently wrong even before considering that `CartResponse` had no field to put it on at all.
+Separately, `FulfillmentMethod` never reached `PricingContext` at either call site — a customer
+choosing `Pickup` at real checkout was still charged the resolved delivery fee, because nothing
+gated `ShippingService.ResolveFeeAsync` on it. Fixed both: `PricingService.PriceAsync` now skips
+shipping quotes and fee resolution entirely for `Pickup`/`Digital`; added `Cart.FulfillmentMethod`
+and `PUT /api/shop/cart/fulfillment-method` so the preview can reflect that choice before checkout
+(mirroring how `UseStoreCredit` already works — preview-only, `CheckoutRequest.FulfillmentMethod`
+is still what's actually charged); and added `deliveryFee`/`shippingMethodName`/`shippingOptions`/
+`fulfillmentMethod` to `CartResponse` so there's finally something to render. Seven new tests
+(111 → 118). Updated the Antivaly Shop blueprint in the same session — this changes what the
+storefront needs to send and render.
+
+### 2026-08-18 — Discounts unified: visibility, cart-level gift cards/store credit, real expiry (§9.43)
+A client asked for one section covering every discount feature (coupons, gift cards, store
+credit), every customer API that needs actually existing, industry-grade "shown where applicable"
+plus a way to *hide* a code behind a targeted email, and correct expiry throughout. Added
+`DiscountVisibility` (Public/Hidden) to `Coupon` and `Promotion`; a new
+`GET /api/shop/cart/available-offers` that lists Public, currently-qualifying codes (Hidden ones
+never appear, but still redeem normally when typed); a new `IDiscountEmailService` and
+`POST .../discount-emails` that emails a code to named customers and/or a `CustomerGroup`,
+respecting marketing opt-out. Found and fixed a real bug along the way: `Cart.GiftCardCodes` and
+`UseStoreCredit` were set-but-never-read — `CartService.MapAsync` always priced the preview with
+an empty gift-card list and `false`, so a shopper applying either saw no discount until checkout
+actually charged them. Added the missing cart endpoints (`gift-cards`, `store-credit`) and wired
+them into the same `PricingContext` checkout uses, so the preview and the charge agree. Made
+`Coupon.ExpiresAt` nullable (an evergreen code is legitimate, not an oversight) and gave
+`StoreCreditEntry` an optional `ExpiresAt`, computed live the same way every other expiry in this
+codebase already is — no sweep job. Eighteen new tests. Updated the BackOffice and Antivaly Shop
+blueprints in the same session (their own intro notes require it).
 
 ### 2026-08-18 — Image upload for categories, business logo/banner, content blocks (§9.42)
 The BackOffice frontend had already guessed at four upload endpoints and wired calls to them;

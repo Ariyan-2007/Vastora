@@ -30,8 +30,12 @@ public record StoreCreditEntryResponse(
     StoreCreditReason Reason,
     string Note,
     string? ReferenceOrderId,
-    DateTime CreatedAt);
+    DateTime CreatedAt,
+    /// <summary>§9.43. Null means this credit never expires. Only meaningful for a positive entry.</summary>
+    DateTime? ExpiresAt);
 
 public record StoreCreditBalanceResponse(decimal Balance, string Currency, List<StoreCreditEntryResponse> RecentEntries);
 
-public record GrantStoreCreditRequest(decimal Amount, string Note);
+/// <summary>§9.43. <paramref name="ExpiresAt"/> is null for a permanent grant — leave it unset for
+/// a refund-settlement credit; set it for a promotional grant meant to lapse.</summary>
+public record GrantStoreCreditRequest(decimal Amount, string Note, DateTime? ExpiresAt = null);

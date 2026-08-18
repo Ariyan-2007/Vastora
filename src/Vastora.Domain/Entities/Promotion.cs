@@ -77,6 +77,11 @@ public class Promotion : BaseEntity, ITenantScoped, IBusinessScoped
     /// <summary>False means this promotion suppresses every lower-priority one.</summary>
     public bool Stackable { get; set; }
 
+    /// <summary>§9.43. Public codes are listed by the storefront's available-offers endpoint;
+    /// Hidden only works when typed exactly — the targeted-campaign case. Meaningless for an
+    /// automatic (no-code) promotion, which was never listable in the first place.</summary>
+    public DiscountVisibility Visibility { get; set; } = DiscountVisibility.Public;
+
     public DateTime StartsAt { get; set; } = DateTime.UtcNow;
 
     public DateTime? EndsAt { get; set; }

@@ -161,7 +161,12 @@ public class OrderService(
             [.. (request.GiftCardCodes ?? []).Concat(cart.GiftCardCodes).Distinct(StringComparer.OrdinalIgnoreCase)],
             request.ShippingRateId,
             request.DeliveryFee,
-            request.UseStoreCredit);
+            request.UseStoreCredit,
+            // §9.44: this was never threaded through before, so a customer who chose Pickup at
+            // checkout was still charged whatever a shipping zone or DefaultDeliveryFee resolved
+            // to — FulfillmentMethod was stored on the resulting Order as a label, but nothing
+            // upstream of that ever consulted it while pricing the order.
+            request.FulfillmentMethod);
 
     private async Task<Domain.Entities.Cart> LoadCartAsync(string businessId, string? customerUserId, string? guestToken, CancellationToken ct)
     {

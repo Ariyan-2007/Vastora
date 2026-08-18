@@ -496,18 +496,36 @@ type CouponResponse = {
   id: string; businessId: string; code: string;
   discountType: "Percentage" | "FixedAmount"; discountValue: number;
   minOrderAmount: number | null; maxUses: number | null; usedCount: number;
-  startsAt: string; expiresAt: string; isActive: boolean;
+  startsAt: string;
+  expiresAt: string | null;   // nullable since 2026-08-18, §9.43 — null = never expires
+  isActive: boolean;
+  visibility: "Public" | "Hidden"; // added 2026-08-18, §9.43 — see below
 };
 type CreateCouponRequest = {
   code: string; discountType: "Percentage" | "FixedAmount"; discountValue: number;
   minOrderAmount?: number | null; maxUses?: number | null;
-  startsAt: string; expiresAt: string; // ISO 8601
+  startsAt: string; expiresAt?: string | null; // ISO 8601 — omit/null for a coupon that never expires
+  visibility?: "Public" | "Hidden"; // defaults to "Public"
 };
-type UpdateCouponRequest = { isActive: boolean; expiresAt: string; maxUses: number | null };
+type UpdateCouponRequest = {
+  isActive: boolean; expiresAt: string | null; maxUses: number | null;
+  visibility: "Public" | "Hidden";
+};
 ```
 
 Coupon codes are stored uppercased server-side — display/normalize accordingly in the UI so
 what's shown matches what customers actually have to type on the Shop.
+
+**`expiresAt` is now optional (§9.43).** A coupon used to be forced to carry an expiry date even
+for a permanent referral/partner code. Leave the date field empty in the create/edit form for
+"never expires" — don't default it to a far-future date as a workaround.
+
+**`visibility` — Public vs Hidden (§9.43).** `Public` is what the Shop's "available offers" panel
+lists automatically. `Hidden` never appears there; it only works when a customer types the exact
+code. Use Hidden for a targeted code you intend to deliver yourself — typically via
+§7.13's `POST .../discount-emails` — rather than one you want shoppers to discover on their own.
+Surface this as a simple toggle ("Show as an available offer" / "Only by direct code entry") in
+the coupon form, defaulting to Public.
 
 ### 7.6 Staff & customers (Admin/TenantOwner/Platform only — not Staff, not DeliveryAgent)
 
@@ -845,13 +863,14 @@ filtered to `status=Pending` is the primary screen, with the count worth badging
 it's the strongest signal a review is genuine. Moderating in either direction recomputes the
 product's `averageRating`, so unpublishing genuinely lowers it.
 
-### 7.13 Merchandising — Admin-tier only (added 2026-08-16, §9.20, §9.23, §9.24, §9.30)
+### 7.13 Merchandising — Admin-tier only (added 2026-08-16, §9.20, §9.23, §9.24, §9.30, §9.43)
 
 All under `/api/businesses/{businessId}`. Full CRUD on each unless noted.
 
 | Area | Paths |
 |---|---|
 | Promotions (§9.23) | `GET/POST .../promotions`, `PUT/DELETE .../promotions/{id}` |
+| Discount emails (§9.43) | `POST .../discount-emails` — see below |
 | Customer groups (§9.23) | `GET/POST .../customer-groups`, `PUT/DELETE .../customer-groups/{id}`, `POST/DELETE .../customer-groups/{id}/members` |
 | Gift cards (§9.24) | `GET/POST .../gift-cards`, `DELETE .../gift-cards/{id}` (deactivate) |
 | Store credit (§9.24) | `GET/POST .../customers/{customerUserId}/store-credit` |
@@ -875,10 +894,22 @@ type CreatePromotionRequest = {
   priority: number;                 // lower runs first
   stackable: boolean;               // false = this one wins and suppresses everything lower-priority
   startsAt: string; endsAt: string | null; isActive: boolean;
+  visibility?: "Public" | "Hidden"; // added 2026-08-18, §9.43 — defaults to "Public". Meaningless when code is null (automatic).
 };
 type CustomerGroupRequest = { name: string; description: string; discountPercent: number | null; isActive: boolean };
 type IssueGiftCardRequest = { amount: number; issuedToEmail: string | null; expiresAt: string | null };
-type GrantStoreCreditRequest = { amount: number; note: string };   // negative amounts deduct
+type GrantStoreCreditRequest = {
+  amount: number; note: string;   // negative amounts deduct
+  expiresAt?: string | null;       // added 2026-08-18, §9.43 — omit/null for a permanent grant (the usual case)
+};
+
+// --- added 2026-08-18, §9.43 ---
+type SendDiscountEmailRequest = {
+  code: string;                          // a Coupon or Promotion code — resolved automatically, no "type" field needed
+  customerUserIds: string[] | null;      // explicit recipients
+  customerGroupId: string | null;        // whole segment's members — unioned with customerUserIds, not either/or
+};
+type SendDiscountEmailResult = { totalRecipients: number; sent: number; skippedOptedOut: number };
 type CreateShippingZoneRequest = {
   name: string;
   countries: string[];              // EMPTY = the catch-all fallback zone
@@ -921,6 +952,20 @@ Notes worth building around:
   new ids — don't try to preserve them client-side.
 - **Terms and Privacy pages are merchant-authored `Page` blocks.** They are legally required in
   most markets, and there was nowhere to put them before this. Consider seeding empty drafts.
+- **`visibility` on both `Coupon` and `Promotion`, added 2026-08-18 (§9.43).** `Public` is listed
+  automatically by the Shop's available-offers panel; `Hidden` never is — it only redeems when the
+  customer types the exact code. Nothing about validation changes between the two; visibility only
+  governs whether the code is *advertised*. Build this as a toggle on the coupon/promotion form,
+  not a separate field to remember to set.
+- **`POST .../discount-emails`, added 2026-08-18 (§9.43) — the delivery mechanism a Hidden code
+  needs.** Picks up a `Coupon` or `Promotion` code and emails it (via the existing
+  order-confirmation-style HTML template, respecting each recipient's marketing opt-out same as
+  every other campaign send) to an explicit customer list, a whole `CustomerGroup` (§7.13 above),
+  or both at once — the two are unioned. A natural place to surface this: a "Send to customers"
+  button on the coupon/promotion detail view, pre-filling `code` and letting the merchant pick
+  either individual customers (from §7.6) or a group. `SendDiscountEmailResult.skippedOptedOut`
+  is worth showing after the send — "sent to 42 of 50 (8 opted out of marketing email)" is a more
+  honest confirmation than a bare "sent!".
 
 ### 7.14 CSV import / export (added 2026-08-16, §9.28 — Admin-tier only)
 

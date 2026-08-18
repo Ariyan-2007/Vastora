@@ -1,4 +1,5 @@
 using Vastora.Domain.Entities;
+using Vastora.Domain.Enums;
 
 namespace Vastora.Application.Promotions;
 
@@ -25,7 +26,11 @@ public record CreatePromotionRequest(
     bool Stackable,
     DateTime StartsAt,
     DateTime? EndsAt,
-    bool IsActive);
+    bool IsActive,
+    /// <summary>§9.43. Hidden means the promotion never appears in the storefront's
+    /// available-offers listing — it still applies when its <c>Code</c> is entered exactly.
+    /// Meaningless for an automatic (no-code) promotion.</summary>
+    DiscountVisibility Visibility = DiscountVisibility.Public);
 
 public record PromotionResponse(
     string Id,
@@ -49,4 +54,5 @@ public record PromotionResponse(
     DateTime StartsAt,
     DateTime? EndsAt,
     bool IsActive,
-    bool IsLiveNow);
+    bool IsLiveNow,
+    DiscountVisibility Visibility);

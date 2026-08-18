@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Vastora.Application.Cart;
 using Vastora.Application.Common.Interfaces;
+using Vastora.Application.Pricing;
 using Vastora.Domain.Enums;
 
 namespace Vastora.API.Controllers;
@@ -77,6 +78,62 @@ public class ShopCartController(ICurrentUserContext currentUser, ICartService ca
     public async Task<ActionResult<CartResponse>> RemovePromotion(string code, [FromQuery] string? businessId, CancellationToken ct)
     {
         var result = await cartService.RemovePromotionCodeAsync(ResolveBusinessId(businessId), ResolveOwner(), code, ct);
+        return Ok(result);
+    }
+
+    /// <summary>§9.43. Applies a gift card code to the cart itself, so its discount shows in the
+    /// preview — previously a gift card only registered at final checkout, blind.</summary>
+    [HttpPost("gift-cards")]
+    [AllowAnonymous]
+    public async Task<ActionResult<CartResponse>> ApplyGiftCard(ApplyCartCouponRequest request, [FromQuery] string? businessId, CancellationToken ct)
+    {
+        var result = await cartService.ApplyGiftCardAsync(ResolveBusinessId(businessId), ResolveOwner(), request, ct);
+        return Ok(result);
+    }
+
+    [HttpDelete("gift-cards/{code}")]
+    [AllowAnonymous]
+    public async Task<ActionResult<CartResponse>> RemoveGiftCard(string code, [FromQuery] string? businessId, CancellationToken ct)
+    {
+        var result = await cartService.RemoveGiftCardAsync(ResolveBusinessId(businessId), ResolveOwner(), code, ct);
+        return Ok(result);
+    }
+
+    /// <summary>§9.43. Opts this cart in or out of spending store credit. Customer-only — a guest has no balance to opt into.</summary>
+    [HttpPut("store-credit")]
+    [Authorize(Roles = nameof(UserRole.Customer))]
+    public async Task<ActionResult<CartResponse>> SetStoreCredit(SetCartStoreCreditRequest request, CancellationToken ct)
+    {
+        var result = await cartService.SetUseStoreCreditAsync(CurrentUser.BusinessId, ResolveOwner(), request.UseStoreCredit, ct);
+        return Ok(result);
+    }
+
+    /// <summary>
+    /// §9.44. Sets how this cart previews delivery — Pickup/Digital drop the delivery fee and
+    /// shipping options from the response entirely, rather than showing a misleading $0. Guest and
+    /// Customer both, unlike store credit: a shopper deciding to pick up in-store shouldn't need
+    /// an account first. Preview-only — repeat the same choice as <c>CheckoutRequest.FulfillmentMethod</c>
+    /// for it to actually be charged that way.
+    /// </summary>
+    [HttpPut("fulfillment-method")]
+    [AllowAnonymous]
+    public async Task<ActionResult<CartResponse>> SetFulfillmentMethod(SetCartFulfillmentMethodRequest request, [FromQuery] string? businessId, CancellationToken ct)
+    {
+        var result = await cartService.SetFulfillmentMethodAsync(ResolveBusinessId(businessId), ResolveOwner(), request.FulfillmentMethod, ct);
+        return Ok(result);
+    }
+
+    /// <summary>
+    /// §9.43. Public coupon and promotion codes worth showing this shopper right now — "shown
+    /// where applicable" instead of a code only ever being usable if the shopper already knew it
+    /// existed. A Hidden code (the targeted, email-only campaign case) never appears here even
+    /// though it still works if typed into <see cref="ApplyCoupon"/>/<see cref="ApplyPromotion"/>.
+    /// </summary>
+    [HttpGet("available-offers")]
+    [AllowAnonymous]
+    public async Task<ActionResult<List<AvailableOfferResponse>>> GetAvailableOffers([FromQuery] string? businessId, CancellationToken ct)
+    {
+        var result = await cartService.GetAvailableOffersAsync(ResolveBusinessId(businessId), ResolveOwner(), ct);
         return Ok(result);
     }
 

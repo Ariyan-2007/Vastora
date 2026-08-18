@@ -1,9 +1,11 @@
 using Vastora.Application.Common.Exceptions;
 using Vastora.Application.Common.Interfaces;
 using Vastora.Application.Coupons;
+using Vastora.Application.GiftCards;
 using Vastora.Application.Pricing;
 using Vastora.Application.Promotions;
 using Vastora.Domain.Entities;
+using Vastora.Domain.Enums;
 
 namespace Vastora.Application.Cart;
 
@@ -13,6 +15,7 @@ public class CartService(
     IMongoRepository<Business> businesses,
     ICouponService couponService,
     IPromotionService promotionService,
+    IGiftCardService giftCardService,
     IPricingService pricingService) : ICartService
 {
     public async Task<CartResponse> GetAsync(string businessId, CartOwner owner, CancellationToken ct = default)
@@ -154,6 +157,59 @@ public class CartService(
         return await MapAsync(cart, owner, ct);
     }
 
+    public async Task<CartResponse> ApplyGiftCardAsync(string businessId, CartOwner owner, ApplyCartCouponRequest request, CancellationToken ct = default)
+    {
+        var cart = await FindAsync(businessId, owner, ct);
+        var code = request.Code.Trim().ToUpperInvariant();
+
+        // Checked now, against the ledger, so a dead or mistyped code fails where the shopper can
+        // see it — the same reasoning ApplyCouponAsync already applies.
+        var balance = await giftCardService.CheckBalanceAsync(businessId, code, ct);
+        if (!balance.IsRedeemable)
+        {
+            throw new ConflictException($"Gift card '{code}' has no balance or has expired.");
+        }
+
+        if (!cart.GiftCardCodes.Contains(code))
+        {
+            cart.GiftCardCodes.Add(code);
+            await carts.UpdateAsync(cart, ct);
+        }
+
+        return await MapAsync(cart, owner, ct);
+    }
+
+    public async Task<CartResponse> RemoveGiftCardAsync(string businessId, CartOwner owner, string code, CancellationToken ct = default)
+    {
+        var cart = await FindAsync(businessId, owner, ct);
+        cart.GiftCardCodes.RemoveAll(c => string.Equals(c, code, StringComparison.OrdinalIgnoreCase));
+        await carts.UpdateAsync(cart, ct);
+        return await MapAsync(cart, owner, ct);
+    }
+
+    public async Task<CartResponse> SetUseStoreCreditAsync(string businessId, CartOwner owner, bool useStoreCredit, CancellationToken ct = default)
+    {
+        var cart = await FindAsync(businessId, owner, ct);
+        cart.UseStoreCredit = useStoreCredit;
+        await carts.UpdateAsync(cart, ct);
+        return await MapAsync(cart, owner, ct);
+    }
+
+    public async Task<CartResponse> SetFulfillmentMethodAsync(string businessId, CartOwner owner, FulfillmentMethod fulfillmentMethod, CancellationToken ct = default)
+    {
+        var cart = await FindAsync(businessId, owner, ct);
+        cart.FulfillmentMethod = fulfillmentMethod;
+        await carts.UpdateAsync(cart, ct);
+        return await MapAsync(cart, owner, ct);
+    }
+
+    public async Task<List<AvailableOfferResponse>> GetAvailableOffersAsync(string businessId, CartOwner owner, CancellationToken ct = default)
+    {
+        var cart = await FindAsync(businessId, owner, ct);
+        var subtotal = cart.Items.Sum(i => i.UnitPrice * i.Quantity);
+        return await pricingService.GetAvailableOffersAsync(businessId, subtotal, ct);
+    }
+
     public async Task ClearAsync(string businessId, CartOwner owner, CancellationToken ct = default)
     {
         var cart = await FindAsync(businessId, owner, ct);
@@ -161,6 +217,8 @@ public class CartService(
         cart.CouponCode = null;
         cart.PromotionCodes.Clear();
         cart.GiftCardCodes.Clear();
+        cart.UseStoreCredit = false;
+        cart.FulfillmentMethod = FulfillmentMethod.Delivery;
         await carts.UpdateAsync(cart, ct);
     }
 
@@ -197,6 +255,11 @@ public class CartService(
         foreach (var code in guestCart.PromotionCodes.Where(c => !customerCart.PromotionCodes.Contains(c)))
         {
             customerCart.PromotionCodes.Add(code);
+        }
+
+        foreach (var code in guestCart.GiftCardCodes.Where(c => !customerCart.GiftCardCodes.Contains(c)))
+        {
+            customerCart.GiftCardCodes.Add(code);
         }
 
         await carts.UpdateAsync(customerCart, ct);
@@ -244,9 +307,11 @@ public class CartService(
         };
 
     /// <summary>
-    /// Priced through the same IPricingService checkout uses. Shipping and tax are deliberately
-    /// left out of EstimatedTotal — neither can be known before a delivery address is, and
-    /// showing a confident number that changes at checkout is worse than showing none.
+    /// Priced through the same IPricingService checkout uses. Tax stays out of EstimatedTotal —
+    /// it depends on a delivery address this cart doesn't have yet — but delivery fee (§9.44) is
+    /// resolvable without one (a flat DefaultDeliveryFee, or a shipping zone that doesn't need a
+    /// specific address to match) and is surfaced as its own field rather than folded silently
+    /// into a total that would then change again at checkout.
     /// </summary>
     private async Task<CartResponse> MapAsync(Domain.Entities.Cart cart, CartOwner owner, CancellationToken ct)
     {
@@ -263,19 +328,32 @@ public class CartService(
         if (cart.Items.Count == 0 || business is null)
         {
             return new CartResponse(cart.Id, cart.BusinessId, items, cart.CouponCode, cart.PromotionCodes,
-                subtotal, [], 0m, subtotal, currency, 0, cart.GuestToken);
+                subtotal, [], 0m, subtotal, currency, 0, cart.GuestToken,
+                cart.GiftCardCodes, 0m, cart.UseStoreCredit, 0m, subtotal,
+                cart.FulfillmentMethod, 0m, null, []);
         }
 
         var lines = await pricingService.ResolveLinesAsync(cart.BusinessId, cart.Items, owner.CustomerUserId, ct);
+
+        // §9.43/§9.44: cart.GiftCardCodes, cart.UseStoreCredit and cart.FulfillmentMethod used to
+        // be dropped here — set on the cart but never fed back into pricing, so a shopper who
+        // applied a gift card, opted into store credit, or chose Pickup saw none of that reflected
+        // until checkout actually charged them. The `0m` literal below was its own separate bug:
+        // ExplicitDeliveryFee is nullable specifically so "no override" can be expressed, and
+        // passing 0m (not null) forced the delivery fee to always resolve as exactly $0 here,
+        // silently, regardless of the business's real shipping zones or DefaultDeliveryFee.
         var breakdown = await pricingService.PriceAsync(
             new PricingContext(business, owner.CustomerUserId, null, cart.CouponCode,
-                cart.PromotionCodes, [], null, 0m, false),
+                cart.PromotionCodes, cart.GiftCardCodes, null, null, cart.UseStoreCredit, cart.FulfillmentMethod),
             lines, ct);
 
         return new CartResponse(
             cart.Id, cart.BusinessId, items, cart.CouponCode, cart.PromotionCodes,
             breakdown.Subtotal, [.. breakdown.Discounts], breakdown.DiscountTotal,
             breakdown.Subtotal - breakdown.DiscountTotal, currency,
-            items.Sum(i => i.Quantity), cart.GuestToken);
+            items.Sum(i => i.Quantity), cart.GuestToken,
+            cart.GiftCardCodes, breakdown.GiftCardTotal, cart.UseStoreCredit,
+            breakdown.StoreCreditApplied, breakdown.AmountDue,
+            cart.FulfillmentMethod, breakdown.DeliveryFee, breakdown.ShippingMethodName, [.. breakdown.ShippingOptions]);
     }
 }

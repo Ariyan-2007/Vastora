@@ -16,7 +16,7 @@ public class AccountingServiceTests
         var expenses = new FakeMongoRepository<Expense>();
         var products = new FakeMongoRepository<Product>();
         var tenants = new FakeMongoRepository<TenantAccount>();
-        var productService = new ProductService(products, tenants);
+        var productService = new ProductService(products, tenants, new FakeMongoRepository<Category>());
         var stockStore = new FakeProductStockStore(products);
         var inventoryService = new InventoryService(products, new FakeMongoRepository<StockMovement>(), stockStore, productService);
 
@@ -26,7 +26,6 @@ public class AccountingServiceTests
             new FakeMongoRepository<Order>(),
             new FakeMongoRepository<Business>(),
             new FakeMongoRepository<ReturnRequest>(),
-            products,
             inventoryService);
 
         return (service, ledgerEntries, expenses, products);
