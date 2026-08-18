@@ -9,7 +9,9 @@ public class CreateCouponRequestValidator : AbstractValidator<CreateCouponReques
         RuleFor(x => x.Code).NotEmpty().MaximumLength(50);
         RuleFor(x => x.DiscountType).IsInEnum();
         RuleFor(x => x.DiscountValue).GreaterThan(0);
-        RuleFor(x => x.ExpiresAt).GreaterThan(x => x.StartsAt);
+        // §9.43: ExpiresAt is now optional (null = never expires) — only checked against StartsAt when present.
+        RuleFor(x => x.ExpiresAt).GreaterThan(x => x.StartsAt).When(x => x.ExpiresAt is not null);
+        RuleFor(x => x.Visibility).IsInEnum();
     }
 }
 
@@ -17,6 +19,6 @@ public class UpdateCouponRequestValidator : AbstractValidator<UpdateCouponReques
 {
     public UpdateCouponRequestValidator()
     {
-        RuleFor(x => x.ExpiresAt).NotEmpty();
+        RuleFor(x => x.Visibility).IsInEnum();
     }
 }

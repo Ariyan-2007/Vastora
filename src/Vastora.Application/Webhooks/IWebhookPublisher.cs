@@ -7,13 +7,15 @@ public static class WebhookEvents
     public const string OrderCreated = "order.created";
     public const string OrderStatusChanged = "order.status_changed";
     public const string OrderDelivered = "order.delivered";
+    /// <summary>§9.47. The Pickup equivalent of <see cref="OrderDelivered"/> — fired instead of it, never alongside it, when a Pickup order reaches <c>PickedUp</c>.</summary>
+    public const string OrderPickedUp = "order.picked_up";
     public const string ProductLowStock = "product.low_stock";
     public const string ReturnRequested = "return.requested";
     public const string ReviewSubmitted = "review.submitted";
 
     public static readonly string[] All =
     [
-        OrderCreated, OrderStatusChanged, OrderDelivered, ProductLowStock, ReturnRequested, ReviewSubmitted
+        OrderCreated, OrderStatusChanged, OrderDelivered, OrderPickedUp, ProductLowStock, ReturnRequested, ReviewSubmitted
     ];
 }
 

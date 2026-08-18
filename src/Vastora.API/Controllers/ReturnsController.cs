@@ -42,4 +42,12 @@ public class ReturnsController(ICurrentUserContext currentUser, IReturnService r
     [Authorize(Roles = $"{nameof(UserRole.PlatformSuperAdmin)},{nameof(UserRole.TenantOwner)},{nameof(UserRole.BusinessAdmin)}")]
     public async Task<ActionResult<ReturnResponse>> Refund(string businessId, string returnId, CancellationToken ct) =>
         Ok(await returnService.RefundAsync(ResolvedTenantId, businessId, returnId, CurrentUser.UserId, ct));
+
+    /// <summary>
+    /// §9.49. Staff-tier, not Admin-tier like refund — a same-price exchange moves no money, so
+    /// none of §9.3's reasoning for restricting it to Admin applies.
+    /// </summary>
+    [HttpPost("{returnId}/exchange")]
+    public async Task<ActionResult<ReturnResponse>> Exchange(string businessId, string returnId, CancellationToken ct) =>
+        Ok(await returnService.ExchangeAsync(ResolvedTenantId, businessId, returnId, CurrentUser.UserId, ct));
 }

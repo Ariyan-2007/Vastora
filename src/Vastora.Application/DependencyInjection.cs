@@ -59,6 +59,7 @@ public static class DependencyInjection
         services.AddScoped<ITaxService, TaxService>();
         services.AddScoped<IShippingService, ShippingService>();
         services.AddScoped<IPromotionService, PromotionService>();
+        services.AddScoped<IDiscountEmailService, DiscountEmailService>();
         services.AddScoped<ICustomerGroupService, CustomerGroupService>();
         services.AddScoped<IGiftCardService, GiftCardService>();
         services.AddScoped<IStoreCreditService, StoreCreditService>();

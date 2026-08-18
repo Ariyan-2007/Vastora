@@ -47,6 +47,11 @@ public interface IPromotionService
 
     Task<PagedResult<PromotionResponse>> GetAllAsync(string businessId, PageRequest page, CancellationToken ct = default);
 
+    /// <summary>§9.43. Currently-live, coded, non-Hidden promotions — the storefront's
+    /// available-offers listing pulls from here (an automatic no-code promotion has nothing to
+    /// list; it just applies).</summary>
+    Task<List<PromotionResponse>> GetPublicLiveAsync(string businessId, CancellationToken ct = default);
+
     Task<PromotionResponse> CreateAsync(string tenantId, string businessId, CreatePromotionRequest request, CancellationToken ct = default);
 
     Task<PromotionResponse> UpdateAsync(string tenantId, string businessId, string promotionId, CreatePromotionRequest request, CancellationToken ct = default);

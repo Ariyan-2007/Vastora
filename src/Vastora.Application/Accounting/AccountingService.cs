@@ -147,12 +147,16 @@ public class AccountingService(
         var windowOrders = await orders.FindAsync(
             o => o.BusinessId == businessId && o.PlacedAt >= from && o.PlacedAt <= to, ct);
 
-        // Revenue is recognised on Delivered only — deliberately the same rule §9.8's SuperOffice
-        // analytics and §9.16a's sales ledger use, so these three numbers can never quietly
-        // disagree with one another.
-        var delivered = windowOrders.Where(o => o.Status == OrderStatus.Delivered).ToList();
+        // Revenue is recognised on Delivered or PickedUp (§9.47) — the two are treated as
+        // equivalent terminal states — deliberately the same rule §9.8's SuperOffice analytics
+        // and §9.16a's sales ledger use, so these three numbers can never quietly disagree.
+        var delivered = windowOrders.Where(o => o.Status.IsFulfilled()).ToList();
         var revenue = delivered.Sum(o => o.Total - o.TaxAmount - o.RefundedAmount);
-        var cogs = delivered.Sum(o => o.Items.Sum(i => i.LineCost ?? 0m));
+
+        // §9.48: costed on outstanding quantity only (Quantity − RefundedQuantity) — summing the
+        // full LineCost regardless of returns disagreed with the ledger-based P&L the moment a
+        // return reversed CostOfGoodsSold there but not here.
+        var cogs = delivered.Sum(o => o.Items.Sum(i => (i.UnitCost ?? 0m) * (i.Quantity - i.RefundedQuantity)));
 
         // Order count is broader than revenue: a still-Processing order is real pipeline activity
         // worth seeing before it becomes revenue.

@@ -85,13 +85,23 @@ public class PricingService(
         var (discounts, promotionIds, freeShipping) = await ComputeDiscountsAsync(context, lines, subtotal, ct);
         var discountTotal = Round(Math.Min(discounts.Sum(d => d.Amount), subtotal));
 
-        var totalWeight = lines.Sum(l => l.WeightKg * l.Quantity);
-        var shippingOptions = await shippingService.GetQuotesAsync(
-            business.Id, context.ShippingAddress, subtotal, totalWeight, ct);
+        // §9.44: Pickup and Digital have no delivery leg — no quotes to choose from, no fee to
+        // charge, regardless of what a shipping zone or the business's flat DefaultDeliveryFee
+        // would otherwise resolve to. This was the actual bug behind "Pickup still gets charged
+        // delivery": FulfillmentMethod never reached pricing before this, so ResolveFeeAsync ran
+        // unconditionally for every order.
+        var hasDeliveryLeg = context.FulfillmentMethod is FulfillmentMethod.Delivery or FulfillmentMethod.ExternalCourier;
 
-        var (deliveryFee, methodName) = await shippingService.ResolveFeeAsync(
-            business, context.ShippingAddress, subtotal, totalWeight,
-            context.SelectedShippingRateId, context.ExplicitDeliveryFee, ct);
+        var totalWeight = lines.Sum(l => l.WeightKg * l.Quantity);
+        var shippingOptions = hasDeliveryLeg
+            ? await shippingService.GetQuotesAsync(business.Id, context.ShippingAddress, subtotal, totalWeight, ct)
+            : [];
+
+        var (deliveryFee, methodName) = hasDeliveryLeg
+            ? await shippingService.ResolveFeeAsync(
+                business, context.ShippingAddress, subtotal, totalWeight,
+                context.SelectedShippingRateId, context.ExplicitDeliveryFee, ct)
+            : (0m, null);
 
         if (freeShipping)
         {
@@ -130,6 +140,60 @@ public class PricingService(
             promotionIds, settlement.Uses, shippingOptions);
     }
 
+    public async Task<List<AvailableOfferResponse>> GetAvailableOffersAsync(
+        string businessId, decimal subtotal, CancellationToken ct = default)
+    {
+        var offers = new List<AvailableOfferResponse>();
+
+        var coupons = await couponService.GetPublicActiveAsync(businessId, ct);
+        offers.AddRange(coupons
+            .Where(c => c.MinOrderAmount is null || subtotal >= c.MinOrderAmount)
+            .Select(c => new AvailableOfferResponse(
+                "Coupon", c.Code, c.Code, DescribeCoupon(c), c.MinOrderAmount, c.ExpiresAt)));
+
+        var promotions = await promotionService.GetPublicLiveAsync(businessId, ct);
+        offers.AddRange(promotions
+            .Where(p => p.MinOrderAmount is null || subtotal >= p.MinOrderAmount)
+            .Select(p => new AvailableOfferResponse(
+                "Promotion", p.Code!, p.Name, DescribePromotion(p), p.MinOrderAmount, p.EndsAt)));
+
+        return offers;
+    }
+
+    private static string DescribeCoupon(CouponResponse c) =>
+        c.DiscountType == DiscountType.Percentage
+            ? $"{c.DiscountValue:0.##}% off"
+            : $"{c.DiscountValue:0.00} off";
+
+    private static string DescribePromotion(PromotionResponse p) => p.Effect switch
+    {
+        PromotionEffect.PercentageOff => $"{p.Value:0.##}% off",
+        PromotionEffect.FixedAmountOff => $"{p.Value:0.00} off",
+        PromotionEffect.FreeShipping => "Free shipping",
+        PromotionEffect.BuyXGetY => $"Buy {p.BuyQuantity}, get {p.GetQuantity} free",
+        _ => p.Name
+    };
+
+    public async Task<PromotionContext> BuildPromotionContextAsync(
+        string businessId, string? customerUserId, IReadOnlyList<ResolvedLine> lines,
+        IReadOnlyList<string> enteredCodes, CancellationToken ct = default)
+    {
+        var groups = string.IsNullOrEmpty(customerUserId)
+            ? []
+            : await customerGroupService.GetForCustomerAsync(businessId, customerUserId, ct);
+
+        var isFirstOrder = string.IsNullOrEmpty(customerUserId)
+            || await orders.CountAsync(o => o.BusinessId == businessId && o.CustomerUserId == customerUserId, ct) == 0;
+
+        return new PromotionContext(
+            businessId,
+            customerUserId,
+            [.. groups.Select(g => g.Id)],
+            isFirstOrder,
+            [.. lines.Select(l => new PricedLine(l.ProductId, l.Product.CategoryId, l.UnitPrice, l.Quantity))],
+            enteredCodes);
+    }
+
     private async Task<(List<AppliedDiscount> Discounts, List<string> PromotionIds, bool FreeShipping)> ComputeDiscountsAsync(
         PricingContext context,
         IReadOnlyList<ResolvedLine> lines,
@@ -138,21 +202,8 @@ public class PricingService(
     {
         var discounts = new List<AppliedDiscount>();
 
-        var groups = string.IsNullOrEmpty(context.CustomerUserId)
-            ? []
-            : await customerGroupService.GetForCustomerAsync(context.Business.Id, context.CustomerUserId, ct);
-
-        var isFirstOrder = string.IsNullOrEmpty(context.CustomerUserId)
-            || await orders.CountAsync(
-                o => o.BusinessId == context.Business.Id && o.CustomerUserId == context.CustomerUserId, ct) == 0;
-
-        var promotionContext = new PromotionContext(
-            context.Business.Id,
-            context.CustomerUserId,
-            [.. groups.Select(g => g.Id)],
-            isFirstOrder,
-            [.. lines.Select(l => new PricedLine(l.ProductId, l.Product.CategoryId, l.UnitPrice, l.Quantity))],
-            context.PromotionCodes);
+        var promotionContext = await BuildPromotionContextAsync(
+            context.Business.Id, context.CustomerUserId, lines, context.PromotionCodes, ct);
 
         var evaluation = await promotionService.EvaluateAsync(promotionContext, ct);
         discounts.AddRange(evaluation.Discounts);

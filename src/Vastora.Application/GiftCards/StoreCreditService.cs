@@ -14,7 +14,12 @@ public class StoreCreditService(
     {
         var all = await entries.FindAsync(
             e => e.BusinessId == businessId && e.CustomerUserId == customerUserId, ct);
-        return all.Sum(e => e.Amount);
+
+        // §9.43: a lapsed promotional credit stops counting the instant it expires — computed
+        // live off the entry's own ExpiresAt, the same pattern Coupon.IsValidNow and
+        // GiftCard.IsRedeemableNow use, so no sweep job is needed to keep the balance correct.
+        var now = DateTime.UtcNow;
+        return all.Where(e => e.CountsTowardBalance(now)).Sum(e => e.Amount);
     }
 
     public async Task<StoreCreditBalanceResponse> GetStatementAsync(string businessId, string customerUserId, CancellationToken ct = default)
@@ -23,15 +28,17 @@ public class StoreCreditService(
             e => e.BusinessId == businessId && e.CustomerUserId == customerUserId, ct);
 
         var business = await businesses.GetByIdAsync(businessId, ct);
+        var now = DateTime.UtcNow;
 
         var recent = all
             .OrderByDescending(e => e.CreatedAt)
             .Take(50)
             .Select(e => new StoreCreditEntryResponse(
-                e.Id, e.Amount, e.Currency, e.Reason, e.Note, e.ReferenceOrderId, e.CreatedAt))
+                e.Id, e.Amount, e.Currency, e.Reason, e.Note, e.ReferenceOrderId, e.CreatedAt, e.ExpiresAt))
             .ToList();
 
-        return new StoreCreditBalanceResponse(all.Sum(e => e.Amount), business?.Currency ?? string.Empty, recent);
+        return new StoreCreditBalanceResponse(
+            all.Where(e => e.CountsTowardBalance(now)).Sum(e => e.Amount), business?.Currency ?? string.Empty, recent);
     }
 
     public async Task RecordAsync(
@@ -43,6 +50,7 @@ public class StoreCreditService(
         string note,
         string? referenceOrderId = null,
         string? referenceReturnId = null,
+        DateTime? expiresAt = null,
         CancellationToken ct = default)
     {
         if (signedAmount == 0)
@@ -63,7 +71,10 @@ public class StoreCreditService(
             Reason = reason,
             Note = note,
             ReferenceOrderId = referenceOrderId,
-            ReferenceReturnId = referenceReturnId
+            ReferenceReturnId = referenceReturnId,
+            // A spend or refund-settlement never expires — only a positive, deliberately-timed
+            // promotional grant does, so the field is ignored for anything but a credit.
+            ExpiresAt = signedAmount > 0 ? expiresAt : null
         }, ct);
     }
 

@@ -1,6 +1,7 @@
 using Vastora.Application.Promotions;
 using Vastora.Application.Tests.TestDoubles;
 using Vastora.Domain.Entities;
+using Vastora.Domain.Enums;
 
 namespace Vastora.Application.Tests.Promotions;
 
@@ -192,5 +193,22 @@ public class PromotionServiceTests
         // The capped increment is atomic in the real repository; here the contract under test is
         // that it refuses past the cap rather than counting to three.
         Assert.Equal(2, (await promotions.GetByIdAsync(promotion.Id, CancellationToken.None))!.UsedCount);
+    }
+
+    [Fact]
+    public async Task GetPublicLiveAsync_ExcludesHiddenAndAutomaticPromotions()
+    {
+        var (service, promotions, _) = Create();
+        promotions.Seed(
+            Live(p => { p.Code = "SUMMER10"; p.Visibility = DiscountVisibility.Public; p.Effect = PromotionEffect.PercentageOff; p.Value = 10m; }),
+            Live(p => { p.Code = "VIPSECRET"; p.Visibility = DiscountVisibility.Hidden; p.Effect = PromotionEffect.PercentageOff; p.Value = 30m; }),
+            Live(p => { p.Code = null; p.Visibility = DiscountVisibility.Public; p.Effect = PromotionEffect.PercentageOff; p.Value = 5m; }));
+
+        // §9.43: Hidden never appears (targeted/email-only campaign case), and an automatic
+        // no-code promotion has nothing for a shopper to type, so it's excluded too.
+        var listed = await service.GetPublicLiveAsync("biz-1", CancellationToken.None);
+
+        var promo = Assert.Single(listed);
+        Assert.Equal("SUMMER10", promo.Code);
     }
 }

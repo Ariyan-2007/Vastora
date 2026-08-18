@@ -26,6 +26,7 @@ namespace Vastora.API.Controllers;
 public class MerchandisingController(
     ICurrentUserContext currentUser,
     IPromotionService promotionService,
+    IDiscountEmailService discountEmailService,
     ICustomerGroupService customerGroupService,
     IGiftCardService giftCardService,
     IStoreCreditService storeCreditService,
@@ -54,6 +55,15 @@ public class MerchandisingController(
         await promotionService.DeleteAsync(ResolvedTenantId, businessId, promotionId, ct);
         return NoContent();
     }
+
+    /// <summary>
+    /// §9.43. Emails a coupon or promotion code to specific customers and/or a whole customer
+    /// group — the delivery mechanism a Hidden code needs, since it never appears in the
+    /// storefront's available-offers listing on its own.
+    /// </summary>
+    [HttpPost("discount-emails")]
+    public async Task<ActionResult<SendDiscountEmailResult>> SendDiscountEmail(string businessId, SendDiscountEmailRequest request, CancellationToken ct) =>
+        Ok(await discountEmailService.SendAsync(ResolvedTenantId, businessId, request, ct));
 
     // --- §9.23: customer groups ---
 
@@ -113,7 +123,7 @@ public class MerchandisingController(
     {
         await storeCreditService.RecordAsync(
             ResolvedTenantId, businessId, customerUserId, request.Amount,
-            StoreCreditReason.ManualAdjustment, request.Note, ct: ct);
+            StoreCreditReason.ManualAdjustment, request.Note, expiresAt: request.ExpiresAt, ct: ct);
         return NoContent();
     }
 

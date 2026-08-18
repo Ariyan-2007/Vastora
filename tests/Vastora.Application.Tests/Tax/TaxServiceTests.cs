@@ -68,4 +68,25 @@ public class TaxServiceTests
         Assert.Equal(10m, untaxed.TotalTax);
         Assert.Equal(15m, taxed.TotalTax);
     }
+
+    /// <summary>§9.48. What OrderService/ReturnService now call to work out the tax portion of a refund.</summary>
+    [Fact]
+    public void ExtractTax_AddsOnTop_WhenPricesAreExclusive_MirroringQuote()
+    {
+        Assert.Equal(20m, new TaxService().ExtractTax(200m, 10m, pricesIncludeTax: false));
+    }
+
+    [Fact]
+    public void ExtractTax_ExtractsFromTheAmount_WhenPricesAlreadyIncludeIt_MirroringQuote()
+    {
+        Assert.Equal(30m, new TaxService().ExtractTax(230m, 15m, pricesIncludeTax: true));
+    }
+
+    [Fact]
+    public void ExtractTax_IsZero_WhenTheAmountOrRateIsNotPositive()
+    {
+        Assert.Equal(0m, new TaxService().ExtractTax(0m, 10m, pricesIncludeTax: false));
+        Assert.Equal(0m, new TaxService().ExtractTax(100m, 0m, pricesIncludeTax: false));
+        Assert.Equal(0m, new TaxService().ExtractTax(-50m, 10m, pricesIncludeTax: false));
+    }
 }

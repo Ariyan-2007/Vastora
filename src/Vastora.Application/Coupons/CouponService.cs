@@ -28,7 +28,8 @@ public class CouponService(IMongoRepository<Coupon> coupons) : ICouponService
             MaxUses = request.MaxUses,
             StartsAt = request.StartsAt,
             ExpiresAt = request.ExpiresAt,
-            IsActive = true
+            IsActive = true,
+            Visibility = request.Visibility
         };
 
         await coupons.AddAsync(coupon, ct);
@@ -41,12 +42,20 @@ public class CouponService(IMongoRepository<Coupon> coupons) : ICouponService
         return list.Select(Map).ToList();
     }
 
+    public async Task<List<CouponResponse>> GetPublicActiveAsync(string businessId, CancellationToken ct = default)
+    {
+        var list = await coupons.FindAsync(
+            c => c.BusinessId == businessId && c.IsActive && c.Visibility == DiscountVisibility.Public, ct);
+        return [.. list.Where(c => c.IsValidNow).Select(Map)];
+    }
+
     public async Task<CouponResponse> UpdateAsync(string tenantId, string businessId, string couponId, UpdateCouponRequest request, CancellationToken ct = default)
     {
         var coupon = await GetScopedAsync(tenantId, businessId, couponId, ct);
         coupon.IsActive = request.IsActive;
         coupon.ExpiresAt = request.ExpiresAt;
         coupon.MaxUses = request.MaxUses;
+        coupon.Visibility = request.Visibility;
         coupon.UpdatedAt = DateTime.UtcNow;
         await coupons.UpdateAsync(coupon, ct);
         return Map(coupon);
@@ -104,5 +113,5 @@ public class CouponService(IMongoRepository<Coupon> coupons) : ICouponService
 
     private static CouponResponse Map(Coupon c) => new(
         c.Id, c.BusinessId, c.Code, c.DiscountType, c.DiscountValue, c.MinOrderAmount,
-        c.MaxUses, c.UsedCount, c.StartsAt, c.ExpiresAt, c.IsActive);
+        c.MaxUses, c.UsedCount, c.StartsAt, c.ExpiresAt, c.IsActive, c.Visibility);
 }

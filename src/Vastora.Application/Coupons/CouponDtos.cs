@@ -12,8 +12,10 @@ public record CouponResponse(
     int? MaxUses,
     int UsedCount,
     DateTime StartsAt,
-    DateTime ExpiresAt,
-    bool IsActive);
+    /// <summary>§9.43. Null means the code never expires.</summary>
+    DateTime? ExpiresAt,
+    bool IsActive,
+    DiscountVisibility Visibility);
 
 public record CreateCouponRequest(
     string Code,
@@ -22,6 +24,8 @@ public record CreateCouponRequest(
     decimal? MinOrderAmount,
     int? MaxUses,
     DateTime StartsAt,
-    DateTime ExpiresAt);
+    /// <summary>§9.43. Omit or pass null for a coupon that never expires.</summary>
+    DateTime? ExpiresAt,
+    DiscountVisibility Visibility = DiscountVisibility.Public);
 
-public record UpdateCouponRequest(bool IsActive, DateTime ExpiresAt, int? MaxUses);
+public record UpdateCouponRequest(bool IsActive, DateTime? ExpiresAt, int? MaxUses, DiscountVisibility Visibility);

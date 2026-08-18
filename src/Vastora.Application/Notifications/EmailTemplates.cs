@@ -163,6 +163,19 @@ public static class EmailTemplates
         return (subject, plain, Layout(business, subject, body.ToString()));
     }
 
+    /// <summary>§9.49. No amount to report — a same-price exchange moved no money.</summary>
+    public static (string Subject, string PlainBody, string HtmlBody) ExchangeProcessed(Business? business, ReturnRequest entity)
+    {
+        var subject = $"Exchange processed for {entity.RmaNumber}";
+        var plain = $"Your exchange for order {entity.OrderNumber} has shipped.";
+
+        var body = new StringBuilder()
+            .Append(Paragraph($"Your exchange for order <strong>{Enc(entity.OrderNumber)}</strong> has shipped."))
+            .Append(ReturnItemsTable(entity));
+
+        return (subject, plain, Layout(business, subject, body.ToString()));
+    }
+
     public static (string Subject, string PlainBody, string HtmlBody) AbandonedCart(
         Business? business, string? recipientName, List<string> itemNames, int itemCount, string? shopLink, string? unsubscribeUrl)
     {
@@ -223,6 +236,32 @@ public static class EmailTemplates
             .Append("</table>");
 
         return (subject, plain, Layout(business, subject, body.ToString()));
+    }
+
+    /// <summary>
+    /// §9.43. A code targeted at one customer or a segment — the delivery mechanism for a Hidden
+    /// coupon/promotion, which never appears in the storefront's available-offers listing and so
+    /// can only be discovered this way.
+    /// </summary>
+    public static (string Subject, string PlainBody, string HtmlBody) DiscountCode(
+        Business? business, string? recipientName, string code, string label, string description, DateTime? expiresAt, string? unsubscribeUrl)
+    {
+        var subject = $"A code just for you: {code}";
+        var greeting = string.IsNullOrWhiteSpace(recipientName) ? "Hi there," : $"Hi {recipientName},";
+        var expiry = expiresAt is null ? "" : $" Valid until {expiresAt:dd MMM yyyy}.";
+        var plain = $"{greeting}\n\nHere's a code for you: {code} — {description}.{expiry}";
+
+        var body = new StringBuilder()
+            .Append(Paragraph(Enc(greeting)))
+            .Append(Paragraph($"Here's a code just for you — <strong>{Enc(label)}</strong>: {Enc(description)}."))
+            .Append(CodeBox(code, ThemeColor(business)));
+
+        if (expiresAt is not null)
+        {
+            body.Append(Muted($"Valid until {expiresAt:dd MMM yyyy}."));
+        }
+
+        return (subject, plain, Layout(business, subject, body.ToString(), unsubscribeUrl));
     }
 
     public static (string Subject, string PlainBody, string HtmlBody) ReviewRequest(
@@ -376,6 +415,11 @@ public static class EmailTemplates
 
     private static string StatusPill(string status, string color) =>
         "<p style=\"margin:0 0 16px;\"><span style=\"display:inline-block;padding:6px 14px;border-radius:999px;background-color:" + color + ";color:#ffffff;font-size:13px;font-weight:600;\">" + Enc(status) + "</span></p>";
+
+    private static string CodeBox(string code, string color) =>
+        "<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" style=\"margin:8px 0 24px;\"><tr><td style=\"border:2px dashed " + color + ";border-radius:6px;padding:14px 24px;\">" +
+        "<span style=\"font-family:'SFMono-Regular',Consolas,monospace;font-size:20px;font-weight:700;letter-spacing:2px;color:" + color + ";\">" + Enc(code) + "</span>" +
+        "</td></tr></table>";
 
     private static string Button(string text, string url, string color) =>
         "<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" style=\"margin:8px 0 24px;\"><tr><td style=\"border-radius:6px;background-color:" + color + ";\">" +

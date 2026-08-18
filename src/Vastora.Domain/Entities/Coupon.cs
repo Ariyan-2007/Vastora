@@ -23,13 +23,20 @@ public class Coupon : BaseEntity, ITenantScoped, IBusinessScoped
 
     public DateTime StartsAt { get; set; } = DateTime.UtcNow;
 
-    public DateTime ExpiresAt { get; set; }
+    /// <summary>§9.43. Null means the code never expires — an evergreen coupon is a legitimate
+    /// design (a permanent referral or partner code), not an oversight, so this is no longer
+    /// forced to always carry a date.</summary>
+    public DateTime? ExpiresAt { get; set; }
 
     public bool IsActive { get; set; } = true;
+
+    /// <summary>§9.43. Public is listed by the storefront's available-offers endpoint; Hidden only
+    /// works when the exact code is typed — see <see cref="DiscountVisibility"/>.</summary>
+    public DiscountVisibility Visibility { get; set; } = DiscountVisibility.Public;
 
     public bool IsValidNow =>
         IsActive
         && DateTime.UtcNow >= StartsAt
-        && DateTime.UtcNow <= ExpiresAt
+        && (ExpiresAt is null || DateTime.UtcNow <= ExpiresAt)
         && (MaxUses is null || UsedCount < MaxUses);
 }

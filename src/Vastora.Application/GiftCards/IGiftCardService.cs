@@ -7,9 +7,11 @@ namespace Vastora.Application.GiftCards;
 public record GiftCardSettlement(IReadOnlyList<OrderGiftCardUse> Uses, decimal TotalApplied);
 
 /// <summary>
-/// §9.24. Gift cards are a payment instrument and a liability — issuing one takes cash without
-/// delivering goods, so it books as GiftCardIssued rather than Revenue (§9.31). Codes are hashed
-/// at rest for the same reason refresh tokens are: whoever holds one can spend it.
+/// §9.24. Gift cards are a payment instrument and a liability, not Revenue when issued. §9.48:
+/// issuance is staff-only with no payment captured here to book, so it writes no ledger entry of
+/// any kind — the balance sheet's gift-card liability is a live sum of RemainingBalance across
+/// active cards instead (see GiftCard.cs). Codes are hashed at rest for the same reason refresh
+/// tokens are: whoever holds one can spend it.
 /// </summary>
 public interface IGiftCardService
 {
