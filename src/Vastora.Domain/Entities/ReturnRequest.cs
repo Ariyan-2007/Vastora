@@ -15,6 +15,15 @@ public class ReturnItem
     public decimal UnitPrice { get; set; }
 
     public decimal LineRefund => UnitPrice * Quantity;
+
+    /// <summary>
+    /// §9.49. Set only when the return's Resolution is Exchange — the variant of the *same*
+    /// Product this line is being swapped for. Validated at request time to price identically to
+    /// UnitPrice, so an exchange never needs a payment step this platform has no gateway for.
+    /// </summary>
+    public string? DesiredVariantId { get; set; }
+
+    public string? DesiredVariantSummary { get; set; }
 }
 
 public class ReturnStatusEvent
@@ -69,4 +78,9 @@ public class ReturnRequest : BaseEntity, ITenantScoped, IBusinessScoped
     public bool Restocked { get; set; }
 
     public DateTime? RefundedAt { get; set; }
+
+    /// <summary>§9.49. True once the desired variant has shipped, so a retry can't double-deduct stock.</summary>
+    public bool Exchanged { get; set; }
+
+    public DateTime? ExchangedAt { get; set; }
 }

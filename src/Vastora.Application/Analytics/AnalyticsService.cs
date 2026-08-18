@@ -16,7 +16,9 @@ public class AnalyticsService(
         var allOrders = await orders.FindAsync(o => o.TenantId == tenantId, ct);
 
         var activeOrders = allOrders.Where(o => o.Status != OrderStatus.Cancelled).ToList();
-        var deliveredOrders = allOrders.Where(o => o.Status == OrderStatus.Delivered).ToList();
+        // §9.47: Delivered and PickedUp both count as revenue-recognised — already materialised
+        // above, so IsFulfilled() runs as plain LINQ-to-Objects rather than a Mongo query translation.
+        var deliveredOrders = allOrders.Where(o => o.Status.IsFulfilled()).ToList();
 
         var businessEntries = tenantBusinesses
             .Select(b => new BusinessAnalyticsEntry(

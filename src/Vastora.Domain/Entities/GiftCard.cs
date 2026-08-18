@@ -4,8 +4,13 @@ namespace Vastora.Domain.Entities;
 
 /// <summary>
 /// §9.24. Sold like a product, spent like cash. Stored as an issued balance rather than a
-/// product row because it is a *liability* — the money is received before the goods are, which
-/// is why issuing one writes a GiftCardIssued ledger entry and not Revenue (§9.31).
+/// product row because it is a *liability* — the money is received before the goods are.
+/// §9.48: this never writes a ledger entry of its own — issuance is a staff-only action
+/// (<c>MerchandisingController.IssueGiftCard</c>) with no captured payment to book, and
+/// redemption needs no entry either, since the order it pays for already books full Revenue at
+/// delivery regardless of tender type. <c>GetBalanceSheetAsync</c>'s gift-card liability is
+/// instead a live sum of every active card's <see cref="RemainingBalance"/>, which the redemption
+/// path already keeps correct.
 /// </summary>
 public class GiftCard : BaseEntity, ITenantScoped, IBusinessScoped
 {

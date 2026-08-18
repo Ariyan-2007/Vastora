@@ -558,7 +558,9 @@ type CheckoutPreviewResponse = {
 
 type CreateReturnRequest = {
   orderId: string;
-  items: { productId: string; variantId: string | null; quantity: number }[];
+  // desiredVariantId: CHANGED 2026-08-18 (§9.49) — required when resolution is "Exchange",
+  // otherwise omit it. It's the variant of the SAME product this line is being swapped for.
+  items: { productId: string; variantId: string | null; quantity: number; desiredVariantId?: string | null }[];
   reason: "Damaged" | "WrongItem" | "NotAsDescribed" | "ChangedMind" | "SizeOrFit" | "Other";
   reasonNote: string;
   resolution: "Refund" | "Exchange" | "StoreCredit";
@@ -567,12 +569,16 @@ type CreateReturnRequest = {
 type ReturnResponse = {
   id: string; rmaNumber: string; orderId: string; orderNumber: string; customerUserId: string;
   items: { productId: string; variantId: string | null; productName: string;
-           quantity: number; unitPrice: number; lineRefund: number }[];
+           quantity: number; unitPrice: number; lineRefund: number;
+           desiredVariantId: string | null; desiredVariantSummary: string | null }[];  // CHANGED §9.49
   reason: CreateReturnRequest["reason"]; reasonNote: string;
   resolution: CreateReturnRequest["resolution"];
-  status: "Requested" | "Approved" | "Rejected" | "Received" | "Refunded" | "Cancelled";
+  // "Exchanged" added 2026-08-18 (§9.49) — the terminal state for an Exchange resolution,
+  // distinct from "Refunded" since no money moved.
+  status: "Requested" | "Approved" | "Rejected" | "Received" | "Refunded" | "Cancelled" | "Exchanged";
   requestedRefundAmount: number; approvedRefundAmount: number | null;
   currency: string; restocked: boolean; refundedAt: string | null;
+  exchanged: boolean; exchangedAt: string | null;               // ADDED §9.49
   statusHistory: { status: ReturnResponse["status"]; timestamp: string; note: string }[];
   createdAt: string;
 };
@@ -585,6 +591,23 @@ snapshot, so what the customer paid is what they get back. The customer can canc
 request is still `Requested` or `Approved`; after that the goods are in transit and staff own it.
 A **partial** return leaves the order `Delivered` — it still is, for the items kept — and only
 sets `refundedAmount`/`refundedQuantity`. Don't render "Refunded" off a non-zero `refundedAmount`.
+
+**Exchange, actually implemented as of 2026-08-18 (§9.49) — previously `resolution: "Exchange"`
+was accepted here but silently behaved exactly like `"Refund"`.** It's now real, but scoped:
+**same product, same price, different variant only** — swap a size or color, nothing else. There
+is no payment step, because there's no payment gateway in this system to collect a shortfall or
+refund an overage, so:
+- When the customer picks "Exchange" as the resolution, the return form must collect a
+  `desiredVariantId` **per line** — the variant of that same product they want instead. Fetch the
+  product's `variants` (from the product detail response) to build that picker; **only offer
+  variants whose effective price matches what was actually paid** (`variant.priceOverride ??
+  product's effective price` must equal the order line's `unitPrice`) — the server 409s on a
+  mismatch, but filtering client-side avoids the round trip and explains itself better than an
+  error would.
+- Settlement is a separate staff action (`POST .../returns/{returnId}/exchange`, BackOffice-only —
+  there's no customer-facing exchange-settlement call) that ships the new variant once the
+  original is back. Nothing to build here beyond showing the resulting `"Exchanged"` status and
+  the `desiredVariantSummary` on each item once it lands.
 
 type OrderStatusEventResponse = { status: OrderResponse["status"]; timestamp: string; note: string };
 type PaymentStatusEventResponse = { status: OrderResponse["paymentStatus"]; timestamp: string; note: string };
@@ -840,6 +863,14 @@ endpoint just decides what to suggest before the customer types anything.
 This is a shortlist, not a guarantee: it filters on `minOrderAmount` against the cart's current
 subtotal, but a code can still fail to apply (wrong customer segment, first-order-only, etc.) —
 handle the `409` from the apply call the same way you already do for a plain wrong/expired code.
+
+> **Correction, 2026-08-18 (§9.46): a customer-group-targeted or first-order-only code was
+> rejected for *every* customer, eligible or not, before this date.** `POST /api/shop/cart/
+> promotions` checked eligibility against the wrong customer state internally — not against
+> whether *this* shopper actually qualified. If you built a workaround (hiding these promo types,
+> a retry loop, treating the `409` as always-expected for such codes), remove it; the endpoint now
+> checks the real customer, same as the rest of pricing always did. No request/response shape
+> changed — same body, same `CartResponse`, same `409` shape for a genuinely ineligible customer.
 
 #### Gift cards on the cart — `POST/DELETE /api/shop/cart/gift-cards[/{code}]?businessId=`
 

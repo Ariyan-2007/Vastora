@@ -27,4 +27,13 @@ public interface ITaxService
     /// only when the Business says shipping is taxable in its jurisdiction.
     /// </summary>
     TaxQuote Quote(Business business, IReadOnlyList<(string TaxClass, decimal Amount)> lineAmounts, decimal shippingAmount);
+
+    /// <summary>
+    /// Inverts <see cref="Quote"/>'s per-line formula for a single amount — how much of a refund
+    /// is the tax portion. Takes the rate and convention directly (typically an Order's own
+    /// snapshotted <c>TaxRatePercent</c>/<c>PricesIncludeTax</c>, never the Business's live
+    /// settings) so a later rate change can never rewrite what a historical order actually owed
+    /// — §9.48.
+    /// </summary>
+    decimal ExtractTax(decimal amount, decimal ratePercent, bool pricesIncludeTax);
 }

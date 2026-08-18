@@ -54,14 +54,24 @@ public class TaxService : ITaxService
     /// </summary>
     private static TaxLine BuildLine(string label, decimal ratePercent, decimal taxableAmount, bool pricesIncludeTax)
     {
-        var rate = ratePercent / 100m;
-
-        var tax = pricesIncludeTax
-            ? taxableAmount - taxableAmount / (1 + rate)
-            : taxableAmount * rate;
+        var tax = ExtractTaxCore(taxableAmount, ratePercent, pricesIncludeTax);
 
         return new TaxLine(label, ratePercent, Math.Round(taxableAmount, 2, MidpointRounding.AwayFromZero),
             Math.Round(tax, 2, MidpointRounding.AwayFromZero));
+    }
+
+    public decimal ExtractTax(decimal amount, decimal ratePercent, bool pricesIncludeTax) =>
+        amount <= 0 || ratePercent <= 0
+            ? 0m
+            : Math.Round(ExtractTaxCore(amount, ratePercent, pricesIncludeTax), 2, MidpointRounding.AwayFromZero);
+
+    private static decimal ExtractTaxCore(decimal amount, decimal ratePercent, bool pricesIncludeTax)
+    {
+        var rate = ratePercent / 100m;
+
+        return pricesIncludeTax
+            ? amount - amount / (1 + rate)
+            : amount * rate;
     }
 
     private static decimal RateFor(Business business, string taxClass) =>

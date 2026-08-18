@@ -57,13 +57,14 @@ public class OrderServiceTests
         var giftCards = new GiftCardService(new FakeMongoRepository<GiftCard>(), businesses);
         var storeCredit = new StoreCreditService(new FakeMongoRepository<StoreCreditEntry>(), businesses);
 
+        var taxService = new TaxService();
         var pricing = new PricingService(
             products, orders, coupons, promotionService, customerGroups,
-            shipping, new TaxService(), giftCards, storeCredit);
+            shipping, taxService, giftCards, storeCredit);
 
         var service = new OrderService(
             orders, carts, products, businesses, profiles, users, ledgerEntries,
-            coupons, pricing, promotionService, giftCards, storeCredit,
+            coupons, pricing, taxService, promotionService, giftCards, storeCredit,
             notifications, inventoryService, webhooks, NullLogger<OrderService>.Instance);
 
         return (service, orders, carts, products, businesses, profiles, users, ledgerEntries);
@@ -178,6 +179,97 @@ public class OrderServiceTests
     }
 
     [Fact]
+    public async Task AssignDeliveryAgentAsync_RejectedForAPickupOrder_ThereIsNothingToDeliver()
+    {
+        // §9.47: assigning an agent used to silently succeed and jump a Pickup order to
+        // OutForDelivery — a state its own transition table no longer recognises at all.
+        var (service, orders, _, _, businesses, _, _, _) = Create();
+        var business = businesses.Seed(new Business())[0];
+        var order = orders.Seed(new Order
+        {
+            TenantId = "t1", BusinessId = business.Id, Status = OrderStatus.Processing, FulfillmentMethod = FulfillmentMethod.Pickup
+        })[0];
+
+        await Assert.ThrowsAsync<ConflictException>(() =>
+            service.AssignDeliveryAgentAsync("t1", business.Id, order.Id, new AssignDeliveryAgentRequest("agent-1"), CancellationToken.None));
+    }
+
+    [Theory]
+    [InlineData(OrderStatus.Processing, OrderStatus.AwaitingPickup)]
+    [InlineData(OrderStatus.Confirmed, OrderStatus.AwaitingPickup)]
+    [InlineData(OrderStatus.AwaitingPickup, OrderStatus.PickedUp)]
+    [InlineData(OrderStatus.PickedUp, OrderStatus.Refunded)]
+    public async Task UpdateStatusAsync_PickupOrder_AllowsTheAwaitingPickupFlow(OrderStatus from, OrderStatus to)
+    {
+        var (service, orders, _, _, businesses, _, _, _) = Create();
+        var business = businesses.Seed(new Business())[0];
+        var order = orders.Seed(new Order
+        {
+            TenantId = "t1", BusinessId = business.Id, Status = from, FulfillmentMethod = FulfillmentMethod.Pickup,
+            StatusHistory = [new OrderStatusEvent { Status = from }]
+        })[0];
+
+        var result = await service.UpdateStatusAsync("t1", business.Id, order.Id,
+            new UpdateOrderStatusRequest(to, "staff action"), CancellationToken.None);
+
+        Assert.Equal(to, result.Status);
+    }
+
+    [Theory]
+    [InlineData(OrderStatus.Confirmed, OrderStatus.OutForDelivery)]
+    [InlineData(OrderStatus.AwaitingPickup, OrderStatus.Delivered)]
+    public async Task UpdateStatusAsync_PickupOrder_RejectsTheDeliveryOnlyStates(OrderStatus from, OrderStatus to)
+    {
+        // A Pickup order must never be movable into OutForDelivery/Delivered — those describe a
+        // courier leg that never exists for it.
+        var (service, orders, _, _, businesses, _, _, _) = Create();
+        var business = businesses.Seed(new Business())[0];
+        var order = orders.Seed(new Order
+        {
+            TenantId = "t1", BusinessId = business.Id, Status = from, FulfillmentMethod = FulfillmentMethod.Pickup
+        })[0];
+
+        await Assert.ThrowsAsync<ConflictException>(() =>
+            service.UpdateStatusAsync("t1", business.Id, order.Id, new UpdateOrderStatusRequest(to, ""), CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task UpdateStatusAsync_ToPickedUp_RecordsRevenue_SameAsDelivered()
+    {
+        var (service, orders, _, _, businesses, _, _, ledgerEntries) = Create();
+        var business = businesses.Seed(new Business())[0];
+        var order = orders.Seed(new Order
+        {
+            TenantId = "t1", BusinessId = business.Id, Status = OrderStatus.AwaitingPickup,
+            FulfillmentMethod = FulfillmentMethod.Pickup, Total = 100m, TaxAmount = 0m
+        })[0];
+
+        await service.UpdateStatusAsync("t1", business.Id, order.Id,
+            new UpdateOrderStatusRequest(OrderStatus.PickedUp, "Collected in store"), CancellationToken.None);
+
+        var entries = await ledgerEntries.FindAsync(e => e.BusinessId == business.Id, CancellationToken.None);
+        Assert.Contains(entries, e => e.Type == LedgerEntryType.Revenue && e.Amount == 100m);
+    }
+
+    [Fact]
+    public async Task UpdateShipmentAsync_DoesNotAutoAdvanceAPickupOrder()
+    {
+        // §9.47: recording a tracking number used to jump any Processing/Confirmed order to
+        // OutForDelivery regardless of fulfillment method — not a legal state for Pickup.
+        var (service, orders, _, _, businesses, _, _, _) = Create();
+        var business = businesses.Seed(new Business())[0];
+        var order = orders.Seed(new Order
+        {
+            TenantId = "t1", BusinessId = business.Id, Status = OrderStatus.Confirmed, FulfillmentMethod = FulfillmentMethod.Pickup
+        })[0];
+
+        var result = await service.UpdateShipmentAsync("t1", business.Id, order.Id,
+            new UpdateShipmentRequest("Courier", "TRACK123", null, null), CancellationToken.None);
+
+        Assert.Equal(OrderStatus.Confirmed, result.Status);
+    }
+
+    [Fact]
     public async Task CheckoutAsync_NoDeliveryFeeSupplied_FallsBackToBusinessDefault()
     {
         var (service, _, carts, products, businesses, _, _, _) = Create();
@@ -224,7 +316,11 @@ public class OrderServiceTests
     {
         var (service, orders, _, _, businesses, _, _, ledgerEntries) = Create();
         var business = businesses.Seed(new Business())[0];
-        var order = orders.Seed(new Order { TenantId = "t1", BusinessId = business.Id, Status = OrderStatus.Delivered, Total = 80m })[0];
+        var order = orders.Seed(new Order
+        {
+            TenantId = "t1", BusinessId = business.Id, Status = OrderStatus.Delivered, Total = 80m,
+            Items = [new OrderItem { ProductId = "p1", ProductName = "Widget", UnitPrice = 80m, Quantity = 1 }]
+        })[0];
 
         await service.UpdateStatusAsync("t1", business.Id, order.Id,
             new UpdateOrderStatusRequest(OrderStatus.Refunded, "Customer returned item"), CancellationToken.None);
@@ -232,6 +328,66 @@ public class OrderServiceTests
         var entry = Assert.Single(await ledgerEntries.FindAsync(l => l.BusinessId == business.Id, CancellationToken.None));
         Assert.Equal(LedgerEntryType.Refund, entry.Type);
         Assert.Equal(80m, entry.Amount);
+    }
+
+    /// <summary>
+    /// §9.48. The previous Refund figure was order.Total − order.RefundedAmount — gross,
+    /// including tax and the already-recorded cost of the goods. This is the case that caught it:
+    /// a taxed, costed order fully refunded should reverse Revenue, TaxCollected and
+    /// CostOfGoodsSold each exactly, not leave Revenue − Refund permanently negative by the tax.
+    /// </summary>
+    [Fact]
+    public async Task UpdateStatusAsync_ToRefunded_ReversesTaxAndCogsAlongsideARefundNetOfTax()
+    {
+        var (service, orders, _, _, businesses, _, _, ledgerEntries) = Create();
+        var business = businesses.Seed(new Business())[0];
+        var order = orders.Seed(new Order
+        {
+            TenantId = "t1", BusinessId = business.Id, Status = OrderStatus.Delivered,
+            Total = 220m, TaxAmount = 20m, TaxRatePercent = 10m, PricesIncludeTax = false, DeliveryFee = 0m,
+            Items = [new OrderItem { ProductId = "p1", ProductName = "Widget", UnitPrice = 200m, UnitCost = 120m, Quantity = 1 }]
+        })[0];
+
+        await service.UpdateStatusAsync("t1", business.Id, order.Id,
+            new UpdateOrderStatusRequest(OrderStatus.Refunded, "Customer returned item"), CancellationToken.None);
+
+        var entries = await ledgerEntries.FindAsync(l => l.BusinessId == business.Id, CancellationToken.None);
+        // Revenue was booked as Total − TaxAmount = 200 at delivery; Refund (180) + the TaxCollected
+        // reversal (20) together net exactly back to that 200, so Revenue − Refund lands on 0
+        // rather than the old bug's permanent −20.
+        Assert.Contains(entries, e => e.Type == LedgerEntryType.Refund && e.Amount == 180m);
+        Assert.Contains(entries, e => e.Type == LedgerEntryType.TaxCollected && e.Amount == -20m);
+        Assert.Contains(entries, e => e.Type == LedgerEntryType.CostOfGoodsSold && e.Amount == -120m);
+    }
+
+    /// <summary>
+    /// §9.48. A manual full refund only settles what a prior partial return left outstanding —
+    /// RefundedQuantity already covers the rest, so this must not reverse cost or tax twice.
+    /// </summary>
+    [Fact]
+    public async Task UpdateStatusAsync_ToRefunded_OnlyReversesTheQuantityAPriorReturnLeftOutstanding()
+    {
+        var (service, orders, _, _, businesses, _, _, ledgerEntries) = Create();
+        var business = businesses.Seed(new Business())[0];
+        var order = orders.Seed(new Order
+        {
+            TenantId = "t1", BusinessId = business.Id, Status = OrderStatus.Delivered, Total = 300m,
+            Items =
+            [
+                new OrderItem
+                {
+                    ProductId = "p1", ProductName = "Widget", UnitPrice = 100m, UnitCost = 60m,
+                    Quantity = 3, RefundedQuantity = 1
+                }
+            ]
+        })[0];
+
+        await service.UpdateStatusAsync("t1", business.Id, order.Id,
+            new UpdateOrderStatusRequest(OrderStatus.Refunded, "Refunding the rest"), CancellationToken.None);
+
+        var entries = await ledgerEntries.FindAsync(l => l.BusinessId == business.Id, CancellationToken.None);
+        Assert.Contains(entries, e => e.Type == LedgerEntryType.Refund && e.Amount == 200m);
+        Assert.Contains(entries, e => e.Type == LedgerEntryType.CostOfGoodsSold && e.Amount == -120m);
     }
 
     // -----------------------------------------------------------------------------------

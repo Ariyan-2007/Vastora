@@ -8,6 +8,7 @@ using Vastora.Application.Inventory;
 using Vastora.Application.Notifications;
 using Vastora.Application.Pricing;
 using Vastora.Application.Promotions;
+using Vastora.Application.Tax;
 using Vastora.Application.Webhooks;
 using Vastora.Domain.Entities;
 using Vastora.Domain.Enums;
@@ -24,6 +25,7 @@ public class OrderService(
     IMongoRepository<LedgerEntry> ledgerEntries,
     ICouponService couponService,
     IPricingService pricingService,
+    ITaxService taxService,
     IPromotionService promotionService,
     IGiftCardService giftCardService,
     IStoreCreditService storeCreditService,
@@ -35,12 +37,13 @@ public class OrderService(
     private static readonly HashSet<OrderStatus> CancellableStatuses = [OrderStatus.PendingPayment, OrderStatus.Processing, OrderStatus.Confirmed];
 
     /// <summary>
-    /// Legal next statuses from each OrderStatus — §9.7. A caller-requested transition not
-    /// listed here (and not a same-status no-op, allowed separately) 409s rather than silently
-    /// applying. AssignDeliveryAgentAsync's own Processing/Confirmed → OutForDelivery jump is
-    /// deliberately mirrored here too, so the two mechanisms never disagree about what's legal.
+    /// Legal next statuses from each OrderStatus for a Delivery/ExternalCourier order — §9.7. A
+    /// caller-requested transition not listed here (and not a same-status no-op, allowed
+    /// separately) 409s rather than silently applying. AssignDeliveryAgentAsync's own
+    /// Processing/Confirmed → OutForDelivery jump is deliberately mirrored here too, so the two
+    /// mechanisms never disagree about what's legal.
     /// </summary>
-    private static readonly Dictionary<OrderStatus, OrderStatus[]> AllowedTransitions = new()
+    private static readonly Dictionary<OrderStatus, OrderStatus[]> DeliveryTransitions = new()
     {
         [OrderStatus.PendingPayment] = [OrderStatus.Processing, OrderStatus.Cancelled],
         [OrderStatus.Processing] = [OrderStatus.Confirmed, OrderStatus.OutForDelivery, OrderStatus.Cancelled],
@@ -50,6 +53,35 @@ public class OrderService(
         [OrderStatus.Cancelled] = [],
         [OrderStatus.Refunded] = []
     };
+
+    /// <summary>
+    /// §9.47. The Pickup equivalent of <see cref="DeliveryTransitions"/> — no courier leg exists,
+    /// so <c>OutForDelivery</c>/<c>Delivered</c> never described what actually happens for a
+    /// Pickup order (nothing is ever "out"). <c>AwaitingPickup</c>/<c>PickedUp</c> replace them
+    /// one-for-one; everything downstream that cares whether an order finished (revenue, returns,
+    /// reviews) treats the two terminal states as equivalent via <c>OrderStatus.IsFulfilled()</c>
+    /// rather than needing to know which fulfillment method produced it.
+    /// </summary>
+    private static readonly Dictionary<OrderStatus, OrderStatus[]> PickupTransitions = new()
+    {
+        [OrderStatus.PendingPayment] = [OrderStatus.Processing, OrderStatus.Cancelled],
+        [OrderStatus.Processing] = [OrderStatus.Confirmed, OrderStatus.AwaitingPickup, OrderStatus.Cancelled],
+        [OrderStatus.Confirmed] = [OrderStatus.AwaitingPickup, OrderStatus.Cancelled],
+        [OrderStatus.AwaitingPickup] = [OrderStatus.PickedUp, OrderStatus.Cancelled],
+        [OrderStatus.PickedUp] = [OrderStatus.Refunded],
+        [OrderStatus.Cancelled] = [],
+        [OrderStatus.Refunded] = []
+    };
+
+    /// <summary>
+    /// Digital and ExternalCourier are deliberately left on <see cref="DeliveryTransitions"/> —
+    /// ExternalCourier still has a real (if outsourced) delivery leg, so OutForDelivery/Delivered
+    /// still describe it correctly. Digital genuinely has the same "nothing is out for delivery"
+    /// mismatch Pickup had, but that wasn't part of what was reported here; flagged in §9.47
+    /// rather than silently left inconsistent.
+    /// </summary>
+    private static Dictionary<OrderStatus, OrderStatus[]> TransitionsFor(FulfillmentMethod method) =>
+        method == FulfillmentMethod.Pickup ? PickupTransitions : DeliveryTransitions;
 
     // ---------------------------------------------------------------------------------------
     // Checkout — §9.17
@@ -440,7 +472,13 @@ public class OrderService(
     {
         var order = await GetScopedAsync(tenantId, businessId, orderId, ct);
 
-        if (request.Status != order.Status && !AllowedTransitions[order.Status].Contains(request.Status))
+        // §9.47: which table applies depends on how this specific order is being fulfilled — a
+        // Pickup order was never legally reachable to OutForDelivery/Delivered even before this
+        // change (AllowedTransitions was shared and undifferentiated), but now the two flows are
+        // explicit rather than one flow silently describing both.
+        var allowedTransitions = TransitionsFor(order.FulfillmentMethod);
+
+        if (request.Status != order.Status && !allowedTransitions[order.Status].Contains(request.Status))
         {
             throw new ConflictException($"Cannot move an order from '{order.Status}' to '{request.Status}'.");
         }
@@ -451,19 +489,38 @@ public class OrderService(
             await RefundSettlementsAsync(order, ct);
         }
 
-        if (request.Status == OrderStatus.Delivered && order.Status != OrderStatus.Delivered)
+        // Delivered and PickedUp are the two ways an order reaches its terminal happy-path state
+        // — courier delivery or in-store pickup — and get identical treatment from here on.
+        if ((request.Status == OrderStatus.Delivered || request.Status == OrderStatus.PickedUp) && !order.Status.IsFulfilled())
         {
-            await CreditDeliveryAgentAsync(order, ct);
+            await CreditDeliveryAgentAsync(order, ct); // no-op for Pickup — no agent was ever assigned to one
             await RecordRevenueAsync(order, ct);
         }
 
         if (request.Status == OrderStatus.Refunded && order.Status != OrderStatus.Refunded)
         {
-            // Reachable only from Delivered per AllowedTransitions above, so a matching Revenue
-            // entry always exists to offset — §9.16a. Unlike before, this now also puts the goods
-            // back into stock: a refunded item used to vanish from inventory entirely (§9.21).
+            // Reachable only from a fulfilled state (Delivered or PickedUp) per the transition
+            // tables above, so a matching Revenue entry always exists to offset — §9.16a. Unlike
+            // before, this now also puts the goods back into stock: a refunded item used to
+            // vanish from inventory entirely (§9.21).
             await RestockAsync(order, ct);
-            await RecordLedgerEntryAsync(order, LedgerEntryType.Refund, order.Total - order.RefundedAmount, ct);
+
+            // §9.48: computed from whatever quantity per line is still outstanding — not
+            // order.Total − order.RefundedAmount, which this replaces. This status change is a
+            // terminal, once-only transition (Refunded has no further moves) that settles
+            // whatever a prior partial return (via ReturnService) hasn't already covered, so
+            // "outstanding" is exactly Quantity − RefundedQuantity per line.
+            var remainingGoods = order.Items.Sum(i => i.UnitPrice * (i.Quantity - i.RefundedQuantity));
+            var remainingCogs = order.Items.Sum(i => (i.UnitCost ?? 0m) * (i.Quantity - i.RefundedQuantity));
+            var taxReversal = taxService.ExtractTax(remainingGoods, order.TaxRatePercent, order.PricesIncludeTax);
+
+            // Net of tax, matching RecordRevenueAsync's own convention, plus the delivery fee —
+            // never touched by a partial return, so it is always refunded here in full. Tax and
+            // COGS are reversed as their own lines below rather than folded in here, so
+            // TaxCollected/CostOfGoodsSold stay individually correct on the balance sheet and P&L.
+            await RecordLedgerEntryAsync(order, LedgerEntryType.Refund, remainingGoods - taxReversal + order.DeliveryFee, ct);
+            await RecordReversalEntryAsync(order, LedgerEntryType.TaxCollected, taxReversal, ct);
+            await RecordReversalEntryAsync(order, LedgerEntryType.CostOfGoodsSold, remainingCogs, ct);
             await RefundSettlementsAsync(order, ct);
 
             order.RefundedAmount = order.Total;
@@ -484,6 +541,11 @@ public class OrderService(
         if (order.Status == OrderStatus.Delivered)
         {
             await webhookPublisher.PublishAsync(tenantId, businessId, WebhookEvents.OrderDelivered, MapForWebhook(order), ct);
+        }
+
+        if (order.Status == OrderStatus.PickedUp)
+        {
+            await webhookPublisher.PublishAsync(tenantId, businessId, WebhookEvents.OrderPickedUp, MapForWebhook(order), ct);
         }
 
         return Map(order);
@@ -510,6 +572,14 @@ public class OrderService(
 
         var order = await GetScopedAsync(tenantId, businessId, orderId, ct);
 
+        // §9.47: a Pickup or Digital order has no courier leg for an agent to run — assigning one
+        // used to silently succeed and jump the order to OutForDelivery, a state that isn't even
+        // legal for those fulfillment methods anymore (PickupTransitions has no entry for it).
+        if (order.FulfillmentMethod is FulfillmentMethod.Pickup or FulfillmentMethod.Digital)
+        {
+            throw new ConflictException($"A {order.FulfillmentMethod} order doesn't have a delivery to assign an agent to.");
+        }
+
         order.DeliveryAgentUserId = request.DeliveryAgentUserId;
         if (order.Status is OrderStatus.Processing or OrderStatus.Confirmed)
         {
@@ -534,9 +604,13 @@ public class OrderService(
         }
 
         // Recording a tracking number *is* dispatching the order, so move it along rather than
-        // making staff perform a second status change that can be forgotten.
+        // making staff perform a second status change that can be forgotten. Guarded to
+        // Delivery/ExternalCourier only (§9.47) — OutForDelivery isn't a legal state for a Pickup
+        // or Digital order, so auto-advancing into it there would strand the order somewhere its
+        // own transition table doesn't recognise.
         if (!string.IsNullOrWhiteSpace(request.TrackingNumber)
-            && order.Status is OrderStatus.Processing or OrderStatus.Confirmed)
+            && order.Status is OrderStatus.Processing or OrderStatus.Confirmed
+            && order.FulfillmentMethod is FulfillmentMethod.Delivery or FulfillmentMethod.ExternalCourier)
         {
             order.Status = OrderStatus.OutForDelivery;
             order.StatusHistory.Add(new OrderStatusEvent
@@ -744,6 +818,31 @@ public class OrderService(
             Amount = amount,
             // Snapshotted onto the order at checkout (§9.38), so a later Business currency change
             // can't retroactively reinterpret this entry.
+            Currency = order.Currency,
+            ReferenceOrderId = order.OrderNumber
+        }, ct);
+    }
+
+    /// <summary>
+    /// §9.48. A return undoing part of a CostOfGoodsSold or TaxCollected line writes a negative
+    /// entry of that *same* type, rather than a distinct "...Reversed" type — Refund already
+    /// established this precedent as the offset to Revenue; this generalizes it, so
+    /// AccountingService's Sum(entries, type) keeps netting correctly with no second type to
+    /// remember to fold in.
+    /// </summary>
+    private async Task RecordReversalEntryAsync(Order order, LedgerEntryType type, decimal amount, CancellationToken ct)
+    {
+        if (amount <= 0)
+        {
+            return;
+        }
+
+        await ledgerEntries.AddAsync(new LedgerEntry
+        {
+            TenantId = order.TenantId,
+            BusinessId = order.BusinessId,
+            Type = type,
+            Amount = -amount,
             Currency = order.Currency,
             ReferenceOrderId = order.OrderNumber
         }, ct);

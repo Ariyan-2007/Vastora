@@ -120,11 +120,13 @@ public class ReviewService(
         }
 
         // Verified-purchase is established from real order history, never accepted from the
-        // client — it is the badge that makes a review worth trusting.
+        // client — it is the badge that makes a review worth trusting. Delivered or PickedUp
+        // both count (§9.47) — a customer who picked an order up in-store bought it just as
+        // genuinely as one who had it delivered.
         var purchase = (await orders.FindAsync(
                 o => o.BusinessId == businessId
                      && o.CustomerUserId == customerUserId
-                     && o.Status == OrderStatus.Delivered, ct))
+                     && (o.Status == OrderStatus.Delivered || o.Status == OrderStatus.PickedUp), ct))
             .FirstOrDefault(o => o.Items.Any(i => i.ProductId == request.ProductId));
 
         var customer = await users.GetByIdAsync(customerUserId, ct);

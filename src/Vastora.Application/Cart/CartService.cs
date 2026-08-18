@@ -142,11 +142,17 @@ public class CartService(
 
         // Evaluated against the real cart before being accepted: a code that qualifies for nothing
         // is rejected rather than sitting on the cart looking applied.
+        //
+        // §9.46: this used to build its own PromotionContext with CustomerGroupIds hardcoded to
+        // [] and IsFirstOrder hardcoded to false — so a promotion actually scoped to a customer
+        // group, or restricted to a first order, was rejected right here even for an eligible
+        // customer, despite PriceAsync (used by the cart preview and checkout) evaluating the same
+        // code correctly moments later. BuildPromotionContextAsync is the same lookup PriceAsync
+        // itself uses, so the two can no longer disagree about who qualifies.
         var lines = await pricingService.ResolveLinesAsync(businessId, cart.Items, owner.CustomerUserId, ct);
-        var evaluation = await promotionService.EvaluateAsync(
-            new PromotionContext(businessId, owner.CustomerUserId, [], false,
-                [.. lines.Select(l => new PricedLine(l.ProductId, l.Product.CategoryId, l.UnitPrice, l.Quantity))],
-                cart.PromotionCodes), ct);
+        var promotionContext = await pricingService.BuildPromotionContextAsync(
+            businessId, owner.CustomerUserId, lines, cart.PromotionCodes, ct);
+        var evaluation = await promotionService.EvaluateAsync(promotionContext, ct);
 
         if (evaluation.AppliedPromotionIds.Count == 0)
         {

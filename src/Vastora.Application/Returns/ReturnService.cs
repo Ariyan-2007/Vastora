@@ -4,13 +4,15 @@ using Vastora.Application.Common.Interfaces;
 using Vastora.Application.GiftCards;
 using Vastora.Application.Inventory;
 using Vastora.Application.Notifications;
+using Vastora.Application.Tax;
 using Vastora.Application.Webhooks;
 using Vastora.Domain.Entities;
 using Vastora.Domain.Enums;
 
 namespace Vastora.Application.Returns;
 
-public record ReturnLineRequest(string ProductId, string? VariantId, int Quantity);
+/// <summary><paramref name="DesiredVariantId"/> is required when the request's Resolution is Exchange, and ignored otherwise (§9.49).</summary>
+public record ReturnLineRequest(string ProductId, string? VariantId, int Quantity, string? DesiredVariantId = null);
 
 public record CreateReturnRequest(
     string OrderId,
@@ -22,7 +24,9 @@ public record CreateReturnRequest(
 /// <summary>Staff decision. <paramref name="ApprovedRefundAmount"/> null means "the full requested amount".</summary>
 public record DecideReturnRequest(bool Approve, decimal? ApprovedRefundAmount, string Note);
 
-public record ReturnItemResponse(string ProductId, string? VariantId, string ProductName, int Quantity, decimal UnitPrice, decimal LineRefund);
+public record ReturnItemResponse(
+    string ProductId, string? VariantId, string ProductName, int Quantity, decimal UnitPrice, decimal LineRefund,
+    string? DesiredVariantId, string? DesiredVariantSummary);
 
 public record ReturnStatusEventResponse(ReturnStatus Status, DateTime Timestamp, string Note);
 
@@ -42,6 +46,8 @@ public record ReturnResponse(
     string Currency,
     bool Restocked,
     DateTime? RefundedAt,
+    bool Exchanged,
+    DateTime? ExchangedAt,
     List<ReturnStatusEventResponse> StatusHistory,
     DateTime CreatedAt);
 
@@ -68,6 +74,12 @@ public interface IReturnService
     /// <summary>Settles the money and writes the partial Refund ledger entry.</summary>
     Task<ReturnResponse> RefundAsync(string tenantId, string businessId, string returnId, string staffUserId, CancellationToken ct = default);
 
+    /// <summary>
+    /// §9.49. Ships the desired variant and writes no ledger entry — a same-price exchange moves
+    /// no money, so there is nothing for Revenue/Refund/COGS/TaxCollected to record.
+    /// </summary>
+    Task<ReturnResponse> ExchangeAsync(string tenantId, string businessId, string returnId, string staffUserId, CancellationToken ct = default);
+
     Task<ReturnResponse> CancelAsync(string businessId, string customerUserId, string returnId, CancellationToken ct = default);
 }
 
@@ -76,10 +88,12 @@ public class ReturnService(
     IMongoRepository<ReturnRequest> returns,
     IMongoRepository<Order> orders,
     IMongoRepository<Business> businesses,
+    IMongoRepository<Product> products,
     IMongoRepository<LedgerEntry> ledgerEntries,
     IInventoryService inventoryService,
     IStoreCreditService storeCreditService,
     IGiftCardService giftCardService,
+    ITaxService taxService,
     INotificationService notificationService,
     IWebhookPublisher webhookPublisher) : IReturnService
 {
@@ -91,9 +105,11 @@ public class ReturnService(
             throw new NotFoundException(nameof(Order), request.OrderId);
         }
 
-        if (order.Status != OrderStatus.Delivered)
+        // §9.47: a Pickup order reaches PickedUp, never Delivered — treated as equivalent here,
+        // same as everywhere else "the order actually finished" is checked.
+        if (!order.Status.IsFulfilled())
         {
-            throw new ConflictException("Only delivered orders can be returned.");
+            throw new ConflictException("Only delivered or picked-up orders can be returned.");
         }
 
         var business = await businesses.GetByIdAsync(businessId, ct)
@@ -105,7 +121,7 @@ public class ReturnService(
         }
 
         var deliveredAt = order.StatusHistory
-            .Where(e => e.Status == OrderStatus.Delivered)
+            .Where(e => e.Status == OrderStatus.Delivered || e.Status == OrderStatus.PickedUp)
             .Select(e => e.Timestamp)
             .DefaultIfEmpty(order.PlacedAt)
             .Max();
@@ -115,7 +131,7 @@ public class ReturnService(
             throw new ConflictException($"The {business.ReturnWindowDays}-day return window for this order has closed.");
         }
 
-        var items = BuildReturnItems(order, request.Items);
+        var items = await BuildReturnItemsAsync(order, request.Items, request.Resolution, ct);
 
         var entity = new ReturnRequest
         {
@@ -148,9 +164,10 @@ public class ReturnService(
     /// <summary>
     /// Validates each requested line against what the order actually contains and what has not
     /// already been returned, and prices it from the order's own snapshot — so a refund can never
-    /// exceed what the customer paid, whatever the product costs today.
+    /// exceed what the customer paid, whatever the product costs today. For an Exchange, also
+    /// resolves and validates the desired variant — §9.49.
     /// </summary>
-    private static List<ReturnItem> BuildReturnItems(Order order, List<ReturnLineRequest> requested)
+    private async Task<List<ReturnItem>> BuildReturnItemsAsync(Order order, List<ReturnLineRequest> requested, ReturnResolution resolution, CancellationToken ct)
     {
         if (requested.Count == 0)
         {
@@ -171,14 +188,56 @@ public class ReturnService(
                     $"'{orderItem.ProductName}': you can return at most {returnable} of this item.");
             }
 
-            items.Add(new ReturnItem
+            var item = new ReturnItem
             {
                 ProductId = orderItem.ProductId,
                 VariantId = orderItem.VariantId,
                 ProductName = orderItem.ProductName,
                 Quantity = line.Quantity,
                 UnitPrice = orderItem.UnitPrice
-            });
+            };
+
+            if (resolution == ReturnResolution.Exchange)
+            {
+                if (string.IsNullOrWhiteSpace(line.DesiredVariantId))
+                {
+                    throw new ConflictException($"'{orderItem.ProductName}': an exchange needs the variant to exchange it for.");
+                }
+
+                if (string.Equals(line.DesiredVariantId, orderItem.VariantId, StringComparison.Ordinal))
+                {
+                    throw new ConflictException($"'{orderItem.ProductName}': that's the same variant already delivered.");
+                }
+
+                var product = await products.GetByIdAsync(orderItem.ProductId, ct)
+                    ?? throw new NotFoundException(nameof(Product), orderItem.ProductId);
+
+                var desiredVariant = product.Variants.FirstOrDefault(v => v.Id == line.DesiredVariantId)
+                    ?? throw new ConflictException($"'{product.Name}' has no variant '{line.DesiredVariantId}'.");
+
+                // Exchange is scoped to a same-price swap only (§9.49) — there is no payment
+                // gateway in this system (§9.6) to collect a shortfall, and refunding an overage
+                // would need its own settlement decision this endpoint deliberately doesn't make.
+                // Compared against what was actually paid (orderItem.UnitPrice), not the product's
+                // live price, so a catalog price change since the order doesn't cause a false
+                // accept or reject.
+                var desiredPrice = desiredVariant.PriceOverride ?? product.EffectivePrice;
+                if (desiredPrice != orderItem.UnitPrice)
+                {
+                    throw new ConflictException(
+                        $"'{product.Name}': exchanging for '{desiredVariant.AttributeSummary}' would change the price " +
+                        $"({orderItem.UnitPrice:0.00} → {desiredPrice:0.00}) — this only supports a same-price exchange.");
+                }
+
+                item.DesiredVariantId = desiredVariant.Id;
+                item.DesiredVariantSummary = desiredVariant.AttributeSummary;
+            }
+            else if (!string.IsNullOrWhiteSpace(line.DesiredVariantId))
+            {
+                throw new ConflictException($"'{orderItem.ProductName}': a desired variant only applies to an Exchange resolution.");
+            }
+
+            items.Add(item);
         }
 
         return items;
@@ -275,6 +334,11 @@ public class ReturnService(
     {
         var entity = await GetScopedAsync(tenantId, businessId, returnId, ct);
 
+        if (entity.Resolution == ReturnResolution.Exchange)
+        {
+            throw new ConflictException("This return is an exchange — use the exchange endpoint instead.");
+        }
+
         if (entity.Status != ReturnStatus.Received)
         {
             throw new ConflictException("Mark the goods received before refunding.");
@@ -285,18 +349,37 @@ public class ReturnService(
 
         var amount = entity.ApprovedRefundAmount ?? entity.RequestedRefundAmount;
 
+        // §9.48: the tax portion of this refund, and the cost of the specific units coming back —
+        // both were previously never reversed, so a returned item stayed permanently expensed
+        // (and double-expensed if it sold again) and its tax stayed on the books as owed forever
+        // even after the customer got it back. Tax is prorated off the refund actually paid out
+        // (approval can be less than requested, e.g. a restocking-fee deduction), not off the
+        // full requested amount; COGS reversal instead follows the physical items actually
+        // returned, from entity.Items, regardless of what staff decided to refund in cash.
+        var taxReversal = taxService.ExtractTax(amount, order.TaxRatePercent, order.PricesIncludeTax);
+        var cogsReversal = entity.Items.Sum(returned =>
+        {
+            var orderItem = order.Items.FirstOrDefault(i => i.ProductId == returned.ProductId && i.VariantId == returned.VariantId);
+            return (orderItem?.UnitCost ?? 0m) * returned.Quantity;
+        });
+
         // A partial Refund ledger entry — the thing the old whole-order-only model could not
         // represent at all. §9.16a's invariant still holds: a Revenue entry for this order was
-        // written when it was delivered, so there is always something to offset.
+        // written when it was delivered, so there is always something to offset. Net of tax, to
+        // match how RecordRevenueAsync booked Revenue in the first place — the tax portion is
+        // reversed as its own TaxCollected line below instead.
         await ledgerEntries.AddAsync(new LedgerEntry
         {
             TenantId = entity.TenantId,
             BusinessId = entity.BusinessId,
             Type = LedgerEntryType.Refund,
-            Amount = amount,
+            Amount = amount - taxReversal,
             Currency = entity.Currency,
             ReferenceOrderId = entity.OrderNumber
         }, ct);
+
+        await RecordReversalEntryAsync(entity, LedgerEntryType.TaxCollected, taxReversal, ct);
+        await RecordReversalEntryAsync(entity, LedgerEntryType.CostOfGoodsSold, cogsReversal, ct);
 
         await SettleRefundAsync(entity, order, amount, ct);
 
@@ -332,6 +415,87 @@ public class ReturnService(
         await returns.UpdateAsync(entity, ct);
 
         await NotifyAsync(entity, b => EmailTemplates.RefundIssued(b, entity, amount), ct);
+
+        return Map(entity);
+    }
+
+    /// <summary>
+    /// §9.49. Ships the desired variant(s) and updates the order to reflect what the customer
+    /// actually ends up with. Same-price only, validated at request time, so there is deliberately
+    /// no ledger entry here: nothing financial changed — the customer still holds exactly the
+    /// value they already paid for, just in a different variant. RefundedAmount/RefundedQuantity
+    /// are untouched for the same reason: no money was refunded, so those fields — which §9.48
+    /// depends on to compute what's still outstanding — must not move.
+    /// </summary>
+    public async Task<ReturnResponse> ExchangeAsync(string tenantId, string businessId, string returnId, string staffUserId, CancellationToken ct = default)
+    {
+        var entity = await GetScopedAsync(tenantId, businessId, returnId, ct);
+
+        if (entity.Resolution != ReturnResolution.Exchange)
+        {
+            throw new ConflictException("This return isn't an exchange — use the refund endpoint instead.");
+        }
+
+        if (entity.Status != ReturnStatus.Received)
+        {
+            throw new ConflictException("Mark the goods received before exchanging.");
+        }
+
+        if (entity.Exchanged)
+        {
+            throw new ConflictException("This return has already been exchanged.");
+        }
+
+        var order = await orders.GetByIdAsync(entity.OrderId, ct)
+            ?? throw new NotFoundException(nameof(Order), entity.OrderId);
+
+        foreach (var item in entity.Items)
+        {
+            // The stock check lives here, not before: RecordMovementAsync refuses to take stock
+            // below zero and throws, so a desired variant that's gone out of stock between request
+            // and this call fails loudly instead of shipping a negative balance.
+            await inventoryService.RecordMovementAsync(
+                entity.TenantId, entity.BusinessId, item.ProductId, StockMovementType.Sale, -item.Quantity,
+                $"Exchange {entity.RmaNumber}: shipped in place of the returned variant",
+                entity.OrderNumber, staffUserId, item.DesiredVariantId, ct);
+
+            var orderItem = order.Items.FirstOrDefault(i => i.ProductId == item.ProductId && i.VariantId == item.VariantId);
+            if (orderItem is null)
+            {
+                continue;
+            }
+
+            if (orderItem.Quantity == item.Quantity)
+            {
+                // The whole line swapped variant — update it in place rather than splitting, so
+                // the order's item list doesn't accumulate a same-priced duplicate line.
+                orderItem.VariantId = item.DesiredVariantId;
+                orderItem.VariantSummary = item.DesiredVariantSummary;
+            }
+            else
+            {
+                orderItem.Quantity -= item.Quantity;
+                order.Items.Add(new OrderItem
+                {
+                    ProductId = orderItem.ProductId,
+                    VariantId = item.DesiredVariantId,
+                    VariantSummary = item.DesiredVariantSummary,
+                    ProductName = orderItem.ProductName,
+                    UnitPrice = orderItem.UnitPrice,
+                    UnitCost = orderItem.UnitCost,
+                    Quantity = item.Quantity
+                });
+            }
+        }
+
+        await orders.UpdateAsync(order, ct);
+
+        entity.Exchanged = true;
+        entity.ExchangedAt = DateTime.UtcNow;
+        Transition(entity, ReturnStatus.Exchanged, "Exchanged for a different variant.", staffUserId);
+        await returns.UpdateAsync(entity, ct);
+
+        await NotifyAsync(entity, b => EmailTemplates.ExchangeProcessed(b, entity), ct);
 
         return Map(entity);
     }
@@ -397,6 +561,29 @@ public class ReturnService(
         return Map(entity);
     }
 
+    /// <summary>
+    /// §9.48. Mirrors OrderService's own reversal helper: a negative entry of the same type
+    /// (rather than a distinct "...Reversed" type), so AccountingService's Sum(entries, type)
+    /// keeps netting correctly with nothing extra to fold in.
+    /// </summary>
+    private async Task RecordReversalEntryAsync(ReturnRequest entity, LedgerEntryType type, decimal amount, CancellationToken ct)
+    {
+        if (amount <= 0)
+        {
+            return;
+        }
+
+        await ledgerEntries.AddAsync(new LedgerEntry
+        {
+            TenantId = entity.TenantId,
+            BusinessId = entity.BusinessId,
+            Type = type,
+            Amount = -amount,
+            Currency = entity.Currency,
+            ReferenceOrderId = entity.OrderNumber
+        }, ct);
+    }
+
     private static void Transition(ReturnRequest entity, ReturnStatus status, string note, string? byUserId)
     {
         entity.Status = status;
@@ -438,9 +625,11 @@ public class ReturnService(
 
     private static ReturnResponse Map(ReturnRequest r) => new(
         r.Id, r.RmaNumber, r.OrderId, r.OrderNumber, r.CustomerUserId,
-        [.. r.Items.Select(i => new ReturnItemResponse(i.ProductId, i.VariantId, i.ProductName, i.Quantity, i.UnitPrice, i.LineRefund))],
+        [.. r.Items.Select(i => new ReturnItemResponse(
+            i.ProductId, i.VariantId, i.ProductName, i.Quantity, i.UnitPrice, i.LineRefund,
+            i.DesiredVariantId, i.DesiredVariantSummary))],
         r.Reason, r.ReasonNote, r.Resolution, r.Status, r.RequestedRefundAmount, r.ApprovedRefundAmount,
-        r.Currency, r.Restocked, r.RefundedAt,
+        r.Currency, r.Restocked, r.RefundedAt, r.Exchanged, r.ExchangedAt,
         [.. r.StatusHistory.Select(e => new ReturnStatusEventResponse(e.Status, e.Timestamp, e.Note))],
         r.CreatedAt);
 }

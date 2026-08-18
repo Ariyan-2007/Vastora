@@ -603,7 +603,11 @@ BackOffice-facing "payout history" endpoint). Safe to build simple "current bala
 **Recording a tracking number ships the order.** `PATCH .../shipment` also moves a `Processing`
 or `Confirmed` order to `OutForDelivery` and emails the customer — so it is the external-courier
 counterpart to `assign-delivery`, not just a metadata edit. Don't make staff perform a separate
-status change afterwards; they'll forget.
+status change afterwards; they'll forget. **Delivery/ExternalCourier only, added 2026-08-18
+(§9.47):** calling this on a Pickup or Digital order updates the tracking fields (harmlessly
+unused) but does **not** move its status — `OutForDelivery` isn't a legal state for either.
+Hide this action entirely for a Pickup/Digital order rather than letting staff click it and
+wonder why nothing moved.
 
 **`GET .../invoice` assigns the invoice number on first call** and returns the same one forever
 after. The number is gapless and sequential per Business, so calling it is not free — trigger it
@@ -613,6 +617,9 @@ lines, discounts, tax and amount paid/due; rendering the PDF is this app's job.
 
 **`assign-delivery` 409s the same way if `business.deliveryModuleEnabled` is `false`** — hide
 the "assign delivery agent" action on the order detail screen when the flag is off (§7.2).
+**Also 409s for a Pickup or Digital order, added 2026-08-18 (§9.47)** — there's no courier leg to
+assign an agent to. Hide this action for those `fulfillmentMethod` values too, same as the
+disabled-module case.
 
 ```ts
 type OrderStatusEventResponse = { status: OrderResponse["status"]; timestamp: string; note: string };
@@ -641,7 +648,9 @@ type OrderResponse = {
   giftCardsUsed: { codeSuffix: string; amountApplied: number }[];
   storeCreditApplied: number; amountDue: number; refundedAmount: number;
   currency: string;                  // §9.38 — snapshotted at checkout; display with THIS
-  status: "PendingPayment" | "Processing" | "Confirmed" | "OutForDelivery" | "Delivered" | "Cancelled" | "Refunded";
+  status: "PendingPayment" | "Processing" | "Confirmed" | "OutForDelivery" | "Delivered"
+        | "AwaitingPickup" | "PickedUp" // added 2026-08-18, §9.47 — Pickup-order equivalents of OutForDelivery/Delivered
+        | "Cancelled" | "Refunded";
   paymentStatus: "Pending" | "Paid" | "Failed" | "Refunded";
   fulfillmentMethod: "Delivery" | "Pickup" | "ExternalCourier" | "Digital";
   shippingAddress: Address | null;
@@ -674,18 +683,46 @@ type AssignDeliveryAgentRequest = { deliveryAgentUserId: string };
 the old "build the UI to only offer sensible transitions, but the API won't stop a client that
 skips steps" caveat no longer applies; the API itself now rejects illegal jumps with a 409
 naming the from/to states (e.g. `"Cannot move an order from 'Processing' to 'Delivered'."`).
-Legal transitions: `PendingPayment`→Processing/Cancelled, `Processing`→Confirmed/
-OutForDelivery/Cancelled, `Confirmed`→OutForDelivery/Cancelled, `OutForDelivery`→Delivered/
-Cancelled, `Delivered`→Refunded only. `Cancelled`/`Refunded` are terminal. Still build the UI to
-only *offer* the legal next steps (better UX than a round-trip 409), but it's now a genuine
-backend guarantee, not just a client-side convention — a status dropdown can safely be
-constrained to `statusHistory[statusHistory.length - 1].status`'s legal transitions.
+Still build the UI to only *offer* the legal next steps (better UX than a round-trip 409), but
+it's a genuine backend guarantee, not just a client-side convention — a status dropdown can
+safely be constrained to `statusHistory[statusHistory.length - 1].status`'s legal transitions
+**for that order's `fulfillmentMethod`** (see immediately below — the legal transitions are no
+longer the same set for every order).
+
+**Two separate flows, chosen by `fulfillmentMethod`, added 2026-08-18 (§9.47).** Before this
+date every order — Pickup included — moved through the courier-shaped flow below, which made no
+sense for one picked up in person: nothing was ever "out for delivery." A status dropdown must
+now branch on `order.fulfillmentMethod` and offer only the matching set.
+
+*`Delivery` / `ExternalCourier`* (unchanged from before this date):
+`PendingPayment`→Processing/Cancelled, `Processing`→Confirmed/OutForDelivery/Cancelled,
+`Confirmed`→OutForDelivery/Cancelled, `OutForDelivery`→Delivered/Cancelled, `Delivered`→Refunded
+only.
+
+*`Pickup`* (new):
+`PendingPayment`→Processing/Cancelled, `Processing`→Confirmed/**AwaitingPickup**/Cancelled,
+`Confirmed`→**AwaitingPickup**/Cancelled, `AwaitingPickup`→**PickedUp**/Cancelled,
+`PickedUp`→Refunded only.
+
+`Cancelled`/`Refunded` are terminal in both. A suggested rendering: label the status pill
+`"Awaiting Pickup"` / `"Picked Up"` for a Pickup order the same way `"Out for Delivery"` /
+`"Delivered"` are labeled for the others — they occupy the same position in their respective
+flows and should read as the equivalent step, not as a different, unfamiliar process.
+
+*`Digital`* orders are, for now, still on the `Delivery`/`ExternalCourier` transition set — the
+same `OutForDelivery`/`Delivered` mismatch Pickup just had applies to Digital too (nothing is
+ever "out for delivery" for a download or a gift card either), but fixing that wasn't part of
+this change and is flagged rather than silently addressed. Don't build UI that assumes Digital
+has its own flow yet; it doesn't.
 
 Setting status to `Cancelled` **restocks the order's items automatically** server-side
 (`TrackInventory` products only) — no separate restock call needed. Setting status to
-`Delivered` **credits the assigned delivery agent's balance** automatically (§7.7) and marks
-revenue as recognized for accounting purposes (§7.10) — both side effects, no separate call
-needed for either.
+`Delivered` **or, for a Pickup order, `PickedUp`** **credits the assigned delivery agent's
+balance** automatically (§7.7 — a no-op for Pickup, since it never had an agent) **and marks
+revenue as recognized** for accounting purposes (§7.10) — both side effects, no separate call
+needed for either. §7.10's dashboard, §7.16's analytics, and returns/reviews eligibility all
+treat `Delivered` and `PickedUp` as the same "this order actually finished" signal — a Pickup
+order is just as returnable and just as reviewable as a Delivered one once it reaches `PickedUp`.
 
 **`statusHistory`/`paymentStatusHistory` are now exposed** — a status-history timeline on the
 order detail screen (which the previous version of this doc flagged as needing a backend
@@ -775,7 +812,7 @@ type ProfitAndLossResponse = {
   deliveryPayouts: number;
   netProfit: number;            // grossProfit − expenses − deliveryPayouts
   taxCollected: number;
-  uncostedOrderCount: number;   // delivered orders in-window with no recorded cost — see note
+  uncostedOrderCount: number;   // delivered or picked-up orders in-window with no recorded cost — see note
 };
 type BalanceSheetResponse = {
   cashPosition: number;
@@ -809,13 +846,15 @@ products missing a `costPrice` is far better than a confident wrong number. Same
 sheet's asset figure are all incomplete. It is the single highest-value field in §7.4.
 
 **Still single-entry, cash-basis bookkeeping, not a GAAP-compliant system** — `revenue` is
-recognized only when an order reaches `Delivered` (the same rule §7.16's dashboard and the
-SuperOffice analytics endpoint use, so the three never quietly disagree). The balance sheet now
+recognized only when an order reaches `Delivered` **or, for a Pickup order, `PickedUp`** (added
+2026-08-18, §9.47 — the two are treated as the same "finished" signal everywhere revenue
+recognition matters; the same rule §7.16's dashboard and the SuperOffice analytics endpoint use,
+so the three never quietly disagree). The balance sheet now
 *has* a liabilities side (tax payable, gift-card float) but it is still partial: no supplier
 payables, no accruals. Frame these screens as an operational dashboard for the business owner,
 not as something to hand to an accountant as a system of record.
 
-### 7.11 Returns / RMAs (added 2026-08-16, main blueprint §9.21)
+### 7.11 Returns / RMAs / Exchanges (added 2026-08-16, main blueprint §9.21; Exchange added 2026-08-18, §9.49)
 
 | Method | Path | Body | Returns | Who |
 |---|---|---|---|---|
@@ -824,6 +863,7 @@ not as something to hand to an accountant as a system of record.
 | POST | `.../returns/{returnId}/decision` | `DecideReturnRequest` | `ReturnResponse` | Staff+ |
 | POST | `.../returns/{returnId}/received` | — | `ReturnResponse` | Staff+ |
 | POST | `.../returns/{returnId}/refund` | — | `ReturnResponse` | **Admin-tier** |
+| POST | `.../returns/{returnId}/exchange` | — | `ReturnResponse` | Staff+ |
 
 ```ts
 type DecideReturnRequest = {
@@ -831,22 +871,86 @@ type DecideReturnRequest = {
   approvedRefundAmount: number | null;  // null = the full requested amount; can be LESS, never more
   note: string;
 };
-// ReturnResponse is the same shape the Shop blueprint documents.
+
+type ReturnItemResponse = {
+  productId: string; variantId: string | null; productName: string;
+  quantity: number; unitPrice: number; lineRefund: number;
+  // ADDED 2026-08-18 (§9.49) — populated only on a line whose Resolution is Exchange.
+  desiredVariantId: string | null;
+  desiredVariantSummary: string | null;      // e.g. "Large" — display label for the variant above
+};
+
+type ReturnResponse = {
+  id: string; rmaNumber: string; orderId: string; orderNumber: string; customerUserId: string;
+  items: ReturnItemResponse[];
+  reason: "Damaged" | "WrongItem" | "NotAsDescribed" | "ChangedMind" | "SizeOrFit" | "Other";
+  reasonNote: string;
+  resolution: "Refund" | "Exchange" | "StoreCredit";
+  // "Exchanged" ADDED 2026-08-18 (§9.49) — a distinct terminal state from "Refunded", since an
+  // exchange moves no money. Never render it with the same badge color as "Refunded".
+  status: "Requested" | "Approved" | "Rejected" | "Received" | "Refunded" | "Cancelled" | "Exchanged";
+  requestedRefundAmount: number; approvedRefundAmount: number | null;
+  currency: string; restocked: boolean; refundedAt: string | null;
+  exchanged: boolean; exchangedAt: string | null;   // ADDED 2026-08-18 (§9.49) — mirrors restocked/refundedAt
+  statusHistory: { status: ReturnResponse["status"]; timestamp: string; note: string }[];
+  createdAt: string;
+};
 ```
 
-**The lifecycle is `Requested → Approved → Received → Refunded`, and each step does something
-different.** Build the UI as three distinct actions, not one "process return" button:
+**The lifecycle is `Requested → Approved → Received → (Refunded | Exchanged)`.** Which of the two
+terminal states applies is decided at request time, by `resolution` — `Refund` and `StoreCredit`
+both settle through `/refund`; `Exchange` settles through the separate `/exchange` endpoint
+instead. Build the UI as four distinct actions, not one "process return" button, and **branch the
+final action on `resolution`**:
 
 - **Decision** — approve or reject. Approving with a lower `approvedRefundAmount` is how a
-  restocking fee is applied. More than requested is a `409`.
+  restocking fee is applied (this figure is meaningless for an Exchange — see below). More than
+  requested is a `409`.
 - **Received** — the goods are physically back. **This is what restocks**, not approval and not
-  the refund. Damaged returns don't restock at all (a `DamageWriteOff` note is written instead).
-- **Refund** — Admin-tier, writes the ledger entry and settles the money. Refusing until
-  `Received` is deliberate; don't try to shortcut it.
+  the refund/exchange. Damaged returns don't restock at all (a `DamageWriteOff` note is written
+  instead) — but an Exchange can still proceed afterward, since shipping the replacement is a
+  separate stock movement from restocking the original.
+- **Refund** (`resolution` is `Refund` or `StoreCredit`) — Admin-tier, writes the ledger entry and
+  settles the money. Refusing until `Received` is deliberate; don't try to shortcut it. Calling
+  this on an `Exchange`-resolution return now **409s** — route to `/exchange` instead. **Since
+  2026-08-18 (§9.48):** this also reverses the returned lines' `costOfGoodsSold` and their share
+  of `taxCollected`, not just `refunds` — a refunded order's `costOfGoodsSold`/`taxPayable` on the
+  P&L and balance sheet will visibly drop after a refund, where before they stayed static.
+- **Exchange** (`resolution` is `Exchange`) — **Staff-tier, not Admin**, because it moves no
+  money: none of §9.3's reasoning for restricting `/refund` to Admin applies here. Calling this on
+  a non-`Exchange` return 409s the same way in reverse. Ships `desiredVariantId` for every line and
+  updates the order's own items to match — see below for what that means for what you render.
 
-A **partial** return leaves the order `Delivered` and only moves `refundedAmount` /
-`refundedQuantity`. Show a "partially refunded" badge off those fields rather than reading the
-order status.
+**How Exchange actually works, and why it's scoped the way it is.** This platform has no payment
+gateway (§9.6) — there is no way to charge a customer a shortfall or refund an overage
+programmatically. So Exchange is deliberately **same product, same price, different variant
+only** (a size or color swap, not "trade this hoodie for that pair of shoes"), and the API enforces
+it:
+- **At request time** (`POST /api/shop/orders/returns`, customer-facing — same blueprint's §6),
+  a line with `resolution: "Exchange"` must carry a `desiredVariantId`, and the server 409s if
+  that variant's effective price doesn't match what was actually paid (`unitPrice` on the order
+  line) — so nothing ever reaches your queue that couldn't settle cleanly.
+- **At `/exchange` time**, staff ship the desired variant: its stock is deducted (409 if it's gone
+  out of stock since the request — a real possibility, don't treat the call as infallible), the
+  original is restocked as usual via `/received`, and the **order itself is updated** —
+  `orderItem.variantId` changes to the exchanged-into variant. If the return only covered part of
+  a line's quantity, the order gains a second line instead (e.g. ordered 3 Medium, exchanged 1 for
+  Large → the order now shows 2 Medium + 1 Large). Refetch the order after an exchange completes
+  if you're showing it alongside the return.
+- **No ledger entry is written, and `refundedAmount`/`refundedQuantity` are untouched.** This is
+  intentional, not a gap to flag: the customer already paid full price for value they still hold,
+  just in a different variant. Don't show an Exchange in any "amount refunded" total — show it as
+  its own count/badge instead. `requestedRefundAmount`/`approvedRefundAmount` still populate (it's
+  a shared field with Refund/StoreCredit) but represent "value of the goods being exchanged," not
+  money actually changing hands — don't label it "refund" in an Exchange context.
+
+A **partial** return leaves the order `Delivered` (or `PickedUp` for a Pickup order) and only
+moves `refundedAmount` / `refundedQuantity` — **for a Refund/StoreCredit resolution only**; an
+Exchange never moves those fields regardless of whether it covers the whole line. Show a "partially
+refunded" badge off those fields rather than reading the order status. **Return eligibility itself
+accepts `PickedUp` the same as `Delivered`, added 2026-08-18 (§9.47)** — a customer who collected
+their order in-store can request a return exactly like one whose order was delivered; no separate
+rule to build for it.
 
 ### 7.12 Reviews (added 2026-08-16, main blueprint §9.25)
 
@@ -859,8 +963,8 @@ order status.
 
 Reviews land `Pending` unless the Business sets `autoPublishReviews` (§7.2) — a moderation queue
 filtered to `status=Pending` is the primary screen, with the count worth badging in the nav.
-`isVerifiedPurchase` is server-established against real delivered orders; show it in the queue,
-it's the strongest signal a review is genuine. Moderating in either direction recomputes the
+`isVerifiedPurchase` is server-established against real delivered **or picked-up** (§9.47) orders;
+show it in the queue, it's the strongest signal a review is genuine. Moderating in either direction recomputes the
 product's `averageRating`, so unpublishing genuinely lowers it.
 
 ### 7.13 Merchandising — Admin-tier only (added 2026-08-16, §9.20, §9.23, §9.24, §9.30, §9.43)
@@ -1025,8 +1129,11 @@ type BusinessDashboardResponse = {
 ```
 
 **This replaces the client-side assembly this document used to recommend.** There is one request
-for the whole dashboard now. Revenue is recognised on `Delivered` only — the same rule the P&L
-and SuperOffice analytics use, so the numbers on different screens agree. `orderCount` is
+for the whole dashboard now. Revenue is recognised on `Delivered` **or `PickedUp`** (§9.47) —
+the same rule the P&L and SuperOffice analytics use, so the numbers on different screens agree.
+`statusBreakdown` will now show `AwaitingPickup`/`PickedUp` buckets for any business taking
+Pickup orders — render whatever `status` values come back rather than a hardcoded list, so a new
+status added later doesn't silently disappear from the chart. `orderCount` is
 broader (every non-cancelled order), because pipeline activity is worth seeing before it becomes
 revenue; don't present the two as if they measure the same thing.
 
@@ -1062,15 +1169,18 @@ revenue; don't present the two as if they measure the same thing.
 12. **Orders** (§7.8) — paged list with **server-side** status/payment/date/search filtering
     (stop filtering in the browser), detail view with a real status-history and
     payment-status-history timeline, a status dropdown constrained to the current status's legal
-    next steps, a "Mark as Paid" action, delivery assignment, plus (new 2026-08-16) an external
-    courier tracking form, an internal-notes field, and an "Issue invoice" action off
-    `GET .../orders/{id}/invoice` — the response carries everything a printable invoice needs;
-    rendering it as a PDF is this app's job, the API supplies the data.
+    next steps **for that order's `fulfillmentMethod`** (added 2026-08-18, §9.47 — a Pickup
+    order's dropdown offers `Awaiting Pickup`/`Picked Up`, never `Out for Delivery`/`Delivered`),
+    a "Mark as Paid" action, delivery assignment and external courier tracking (both hidden
+    entirely for Pickup/Digital orders, which 409 if called), an internal-notes field, and an
+    "Issue invoice" action off `GET .../orders/{id}/invoice` — the response carries everything a
+    printable invoice needs; rendering it as a PDF is this app's job, the API supplies the data.
 
 **New pages for the §9B areas** (all Admin-tier unless noted):
 
-15. **Returns queue** (§7.11) — the three-step decision → received → refund flow, Staff-visible
-    except the refund action. Badge the pending count in the nav.
+15. **Returns queue** (§7.11) — decision → received → **refund or exchange**, branched on
+    `resolution` (§9.49). Staff-visible except the refund action; exchange is Staff-visible too —
+    it moves no money. Badge the pending count in the nav.
 16. **Review moderation** (§7.12) — queue filtered to `Pending`, with verified-purchase badges
     and a merchant-reply box. Staff-visible except delete.
 17. **Promotions & customer groups** (§7.13) — campaigns are a genuinely different mental model

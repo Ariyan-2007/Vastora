@@ -174,6 +174,26 @@ public class PricingService(
         _ => p.Name
     };
 
+    public async Task<PromotionContext> BuildPromotionContextAsync(
+        string businessId, string? customerUserId, IReadOnlyList<ResolvedLine> lines,
+        IReadOnlyList<string> enteredCodes, CancellationToken ct = default)
+    {
+        var groups = string.IsNullOrEmpty(customerUserId)
+            ? []
+            : await customerGroupService.GetForCustomerAsync(businessId, customerUserId, ct);
+
+        var isFirstOrder = string.IsNullOrEmpty(customerUserId)
+            || await orders.CountAsync(o => o.BusinessId == businessId && o.CustomerUserId == customerUserId, ct) == 0;
+
+        return new PromotionContext(
+            businessId,
+            customerUserId,
+            [.. groups.Select(g => g.Id)],
+            isFirstOrder,
+            [.. lines.Select(l => new PricedLine(l.ProductId, l.Product.CategoryId, l.UnitPrice, l.Quantity))],
+            enteredCodes);
+    }
+
     private async Task<(List<AppliedDiscount> Discounts, List<string> PromotionIds, bool FreeShipping)> ComputeDiscountsAsync(
         PricingContext context,
         IReadOnlyList<ResolvedLine> lines,
@@ -182,21 +202,8 @@ public class PricingService(
     {
         var discounts = new List<AppliedDiscount>();
 
-        var groups = string.IsNullOrEmpty(context.CustomerUserId)
-            ? []
-            : await customerGroupService.GetForCustomerAsync(context.Business.Id, context.CustomerUserId, ct);
-
-        var isFirstOrder = string.IsNullOrEmpty(context.CustomerUserId)
-            || await orders.CountAsync(
-                o => o.BusinessId == context.Business.Id && o.CustomerUserId == context.CustomerUserId, ct) == 0;
-
-        var promotionContext = new PromotionContext(
-            context.Business.Id,
-            context.CustomerUserId,
-            [.. groups.Select(g => g.Id)],
-            isFirstOrder,
-            [.. lines.Select(l => new PricedLine(l.ProductId, l.Product.CategoryId, l.UnitPrice, l.Quantity))],
-            context.PromotionCodes);
+        var promotionContext = await BuildPromotionContextAsync(
+            context.Business.Id, context.CustomerUserId, lines, context.PromotionCodes, ct);
 
         var evaluation = await promotionService.EvaluateAsync(promotionContext, ct);
         discounts.AddRange(evaluation.Discounts);

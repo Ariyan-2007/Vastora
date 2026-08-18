@@ -210,7 +210,7 @@ All entities live in `Vastora.Domain.Entities`, inherit `BaseEntity` (`Id`, `Cre
 | `Product` | Business | Price, `CompareAtPrice`, `DiscountPercent`/`DiscountExpiresAt` → `EffectivePrice` computed property. `StockQuantity`/`TrackInventory` (mutated only via `IInventoryService`, never directly — §9.15). `ReorderThreshold`/`ReorderQuantity` (§9.15b). Embedded `Variants` list (catalog-only, no Cart/Order integration — §9.5). |
 | `Coupon` | Business | Percentage or fixed discount, usage cap, validity window (`ExpiresAt` nullable since §9.43 — null means it never expires). `Visibility` (§9.43): `Public`/`Hidden`. `IsValidNow` computed property. |
 | `Cart` | Business + Customer | One live cart per customer per business, embedded `CartItem` list, optional coupon code, gift-card codes and a `UseStoreCredit` toggle (§9.43) that now actually feed the priced preview. `FulfillmentMethod` (§9.44, default `Delivery`) — `Pickup`/`Digital` drop the delivery fee and shipping options from the preview entirely. |
-| `Order` | Business | Embedded `OrderItem` snapshot (price/name captured at checkout, immune to later product edits), `StatusHistory` + `PaymentStatusHistory` audit trails, `PaymentStatus` separate from fulfillment `Status` (transition rules enforced — §9.7). |
+| `Order` | Business | Embedded `OrderItem` snapshot (price/name captured at checkout, immune to later product edits), `StatusHistory` + `PaymentStatusHistory` audit trails, `PaymentStatus` separate from fulfillment `Status` (transition rules enforced per-`FulfillmentMethod` — §9.7, §9.47). `OrderStatus` gained `AwaitingPickup`/`PickedUp` (§9.47) — the Pickup-order equivalents of `OutForDelivery`/`Delivered`; `OrderStatusExtensions.IsFulfilled()` treats `Delivered`/`PickedUp` as the same terminal state everywhere that matters (revenue, returns, reviews). |
 | `DeliveryAgentProfile` | Business | Operational stats for a `DeliveryAgent` user — status, balance (credited on delivery — §9.7), level, completed count. |
 | `StockMovement` | Business | One row per `Product.StockQuantity` change — Sale/Restock/Return/Adjustment/DamageWriteOff, signed `QuantityDelta` (§9.15a). |
 | `LedgerEntry` | Business | Revenue/Refund/DeliveryPayout, written only by `OrderService` on Delivered/Refunded transitions and agent payout (§9.16a) — no direct-write endpoint. |
@@ -656,7 +656,11 @@ the rest were scoped down on purpose.
       free: `Cancelled` is unreachable from `Delivered` and `Refunded` is only reachable from
       it, so refund bookkeeping never needs to check `PaymentStatus` — see §9.16a. Smoke-tested:
       `Processing`→`Delivered` (illegal) 409'd with the exact message; the full legal path
-      (assign agent → `OutForDelivery` → `Delivered`) succeeded.
+      (assign agent → `OutForDelivery` → `Delivered`) succeeded. **Superseded 2026-08-18 (§9.47):**
+      this single fixed table applied to every order regardless of `FulfillmentMethod`, which
+      meant a Pickup order — that never had a courier leg at all — moved through the same
+      `OutForDelivery`/`Delivered` states a Delivery order does. Split into a per-`FulfillmentMethod`
+      table; see §9.47 for the replacement.
 - [x] **Delivery agent earnings.** `OrderService.CreditDeliveryAgentAsync`, called on the
       `→ Delivered` transition: credits the assigned agent's `DeliveryAgentProfile.Balance` by
       their flat `DeliveryCharge` and increments `CompletedDeliveries`. No-op if no agent was
@@ -997,7 +1001,7 @@ in the same ~40 lines:
 
 ### 9.20 Shipping & fulfillment depth
 
-**mostly done (2026-08-16).** `ShippingZone`/`ShippingRate` with country+region matching (most specific wins), subtotal and weight bands, free-shipping thresholds expressed as a zero-priced band, and multiple selectable methods at checkout. `Product.WeightKg`/dimensions added to feed it. External-courier tracking is now first-class (`PATCH .../orders/{id}/shipment`, which also advances the order to `OutForDelivery`), and `FulfillmentMethod` covers Pickup/ExternalCourier/Digital — closing §9.14's deferred pickup item. **Still not done:** partial shipment / split fulfillment, which needs per-item fulfillment state rather than one `Order.Status`.
+**mostly done (2026-08-16).** `ShippingZone`/`ShippingRate` with country+region matching (most specific wins), subtotal and weight bands, free-shipping thresholds expressed as a zero-priced band, and multiple selectable methods at checkout. `Product.WeightKg`/dimensions added to feed it. External-courier tracking is now first-class (`PATCH .../orders/{id}/shipment`, which also advances the order to `OutForDelivery`), and `FulfillmentMethod` covers Pickup/ExternalCourier/Digital — closing §9.14's deferred pickup item. **Still not done:** partial shipment / split fulfillment, which needs per-item fulfillment state rather than one `Order.Status`. **Correction, §9.47 (2026-08-18):** "closing §9.14's deferred pickup item" overstated it — the `FulfillmentMethod` field existed, but every order still moved through the same `OutForDelivery`/`Delivered` states regardless of it, which described a courier leg a Pickup order never had. §9.47 is what actually finished this: Pickup now has its own `AwaitingPickup`/`PickedUp` transition table.
 `Business.DefaultDeliveryFee` is one flat decimal, and §9.7 already noted zone/distance logic
 was out of scope. The full list of what a real seller expects and cannot express today:
 - [x] **Shipping zones / rate tables** — fee by destination, order value, or weight. Requires
@@ -1515,9 +1519,302 @@ back off short of `DELETE /api/shop/cart` (clearing the entire basket, items inc
 
 ---
 
+### 9.46 Promotion codes rejected at apply-time for eligible customers — done (2026-08-18)
+
+A client asked to "make gift cards and promotional codes functionable" in the cart. Auditing gift
+cards end-to-end (apply/remove on the cart, ledger balance validation, redemption at checkout,
+order settlement) turned up nothing — that path was already correct, confirmed with the client
+(they specifically meant *redeeming* an existing code, not a self-service "buy a gift card"
+flow, which doesn't exist and wasn't what was asked for here). Promotion codes were a different
+story: a real bug, not a documentation gap.
+
+- [x] **`CartService.ApplyPromotionCodeAsync` validated against a fake customer.**
+      It built its own `PromotionContext` with `CustomerGroupIds` hardcoded to `[]` and
+      `IsFirstOrder` hardcoded to `false` — so a promotion actually scoped to a customer group the
+      shopper belongs to, or restricted to first orders, was rejected right there with `"Code
+      'X' isn't valid for this cart"`, even for a genuinely eligible customer. The same code would
+      have applied correctly moments later at the real pricing pass (`PricingService.PriceAsync`,
+      used by the cart preview and checkout), which builds the *real* group membership and
+      order-history lookup — meaning the apply-time check and the pricing engine could disagree
+      about who qualifies, and the apply-time check was the one customers actually hit first.
+      This is exactly the shape of bug a "make it functionable" report would surface: the code
+      existed, the endpoint existed, and it still didn't work for the customers it was built for.
+- [x] **Fixed by sharing one context-builder instead of two.** Extracted the customer-group/
+      first-order lookup out of `PricingService.ComputeDiscountsAsync` into a new public
+      `IPricingService.BuildPromotionContextAsync(businessId, customerUserId, lines, enteredCodes,
+      ct)`, and pointed both call sites at it — `ComputeDiscountsAsync` itself, and
+      `CartService.ApplyPromotionCodeAsync`. There is now exactly one place that decides "what
+      does this customer's promotion context look like," so the apply-time check and the pricing
+      engine cannot drift apart again the way they just had.
+- [x] Two new tests proving the fix: a customer-group-targeted code applying for a member of that
+      group, and a first-order-only code applying for a customer with no prior orders — both
+      would have thrown `ConflictException` before this change. 121 total (119 → 121).
+
+No API surface changed — same endpoints, same request/response shapes — so nothing was needed in
+the Antivaly Shop blueprint beyond a short correction note flagging that these two promotion
+features now actually work, in case a workaround was built around them appearing broken.
+
+---
+
+### 9.47 Pickup orders get their own status flow — done (2026-08-18)
+
+A client flagged that a Pickup order moved through BackOffice exactly like a Delivery order —
+`Confirmed → OutForDelivery → Delivered` — which describes a courier leg that never happens for
+one collected in-store. Asked for a Pickup-specific flow (`Confirmed → Awaiting Pickup → Picked
+Up` or equivalent), addressed in both the backend and the BackOffice blueprint.
+
+- [x] **`OrderStatus` gained `AwaitingPickup`/`PickedUp`** — the Pickup-order equivalents of
+      `OutForDelivery`/`Delivered`. Existing values unrenumbered (additive only).
+- [x] **`OrderService`'s single `AllowedTransitions` table split into two**, chosen by
+      `order.FulfillmentMethod` (`TransitionsFor`): `DeliveryTransitions` (unchanged —
+      Delivery/ExternalCourier still go `Confirmed → OutForDelivery → Delivered`) and the new
+      `PickupTransitions` (`Confirmed → AwaitingPickup → PickedUp`). `Digital` is left on
+      `DeliveryTransitions` for now — it has the identical "nothing is ever out for delivery"
+      mismatch Pickup just had, but fixing it wasn't part of what was asked, so it's flagged
+      rather than silently addressed alongside Pickup.
+- [x] **Guarded the two places that used to auto-advance any order to `OutForDelivery` regardless
+      of fulfillment method** — `AssignDeliveryAgentAsync` now 409s outright for a Pickup/Digital
+      order (there's no courier leg to assign an agent to) instead of silently attaching one and
+      jumping the status; `UpdateShipmentAsync`'s tracking-number-ships-the-order shortcut is now
+      scoped to Delivery/ExternalCourier only. Both were real bugs waiting to happen: `OutForDelivery`
+      isn't a legal state in `PickupTransitions` at all, so either path could have stranded a
+      Pickup order somewhere its own transition table didn't recognise.
+- [x] **One shared `OrderStatusExtensions.IsFulfilled()`** (`Delivered or PickedUp`) instead of
+      six independent `== OrderStatus.Delivered` checks scattered across revenue recognition
+      (`OrderService.RecordRevenueAsync`'s trigger, `AccountingService`'s dashboard,
+      `AnalyticsService`'s tenant rollup), return eligibility (`ReturnService`), verified-purchase
+      reviews (`ReviewService`), and the post-delivery review-request sweep
+      (`LifecycleNotificationService`) — every one of these now treats a picked-up order exactly
+      like a delivered one, where before this change a Pickup order could never be returned,
+      never count toward revenue, and its buyer could never leave a verified review, because none
+      of that logic knew `PickedUp` existed. **Written as a direct `||` comparison, not the
+      extension method, at every call site whose predicate is sent to MongoDB as a query**
+      (`LifecycleNotificationService`, `ReviewService`) — the driver's LINQ provider cannot
+      translate an arbitrary C# extension method into a Mongo filter; only genuinely in-memory
+      `.Where()` calls (`AccountingService`, `AnalyticsService`, both already operating on a
+      materialised `List<Order>`) use `IsFulfilled()` directly.
+- [x] New webhook event `order.picked_up` — the Pickup equivalent of the existing
+      `order.delivered`, fired instead of it (never alongside it) when a Pickup order reaches
+      `PickedUp`.
+- [x] Ten new tests (121 → 131): the four-state Pickup transition table (both the legal path and
+      the now-illegal `OutForDelivery`/`Delivered` jumps), revenue recorded on `PickedUp`,
+      `AssignDeliveryAgentAsync` rejecting a Pickup order, `UpdateShipmentAsync` no longer
+      auto-advancing one, and a `PickedUp` order accepted for a return the same as a `Delivered`
+      one.
+
+Updated `docs/BACKOFFICE_FRONTEND_BLUEPRINT.md` in the same session — staff choose from a status
+dropdown there, and it needs to branch on `fulfillmentMethod` now rather than offering one fixed
+set of next steps. Also updated `docs/SUPEROFFICE_FRONTEND_BLUEPRINT.md`'s webhook event list for
+`order.picked_up`. Not touched, and flagged rather than silently left inconsistent: `Digital`
+orders have the same underlying mismatch Pickup just had, and `CheckoutRequest.ShippingAddress`
+is still required even for a Pickup order (§9.44 already flagged this one; still true).
+
+---
+
+### 9.48 Accounting audit against BAS/UK GAAP — bugs fixed, single-entry model unchanged (2026-08-18)
+
+Asked to review the accounting module against Bangladeshi Accounting Standards / UK GAAP
+("UK CA standard"). The honest answer, unchanged from §9.16/§9.31: **it does not, and can't
+without a full rearchitecture.** Both are accrual-basis double-entry regimes (BAS is IFRS-converged
+via ICAB; UK GAAP is FRS 102 / Companies Act 2006) requiring a chart of accounts, balanced
+debit/credit journal entries, and statutory primary statements (Statement of Financial Position,
+Statement of Comprehensive Income, Statement of Cash Flows, Statement of Changes in Equity). This
+module is a single append-only ledger of five transaction types feeding two management-style
+reports — scoped that way deliberately from the start, not a bug. Offered the full rearchitecture
+as an option; **declined in favour of fixing the concrete bugs the audit found** and leaving the
+single-entry cash-basis architecture as-is.
+
+Four real defects found and fixed, independent of the standards question — these were wrong money,
+not just non-compliant money:
+
+- [x] **`CostOfGoodsSold` was never reversed on a refund or return**, even though the same code
+      path explicitly restocks the item (`RestockAsync` / `inventoryService.RecordMovementAsync`).
+      A returned unit went back into sellable inventory *and* stayed permanently expensed from the
+      original sale — and if it sold again, it was COGS'd a second time. Both refund paths now
+      reverse exactly the cost of the quantity actually coming back: `ReturnService.RefundAsync`
+      from the specific `entity.Items` lines (matched to `order.Items` for their snapshotted
+      `UnitCost`), and `OrderService.UpdateStatusAsync`'s manual full-refund branch from whatever
+      `Quantity − RefundedQuantity` each line still has outstanding (so a manual refund following a
+      prior partial return never reverses cost twice). `AccountingService.GetDashboardAsync` had
+      an independent copy of the identical bug — its COGS figure is computed straight from
+      `Order.Items`, not the ledger — summing full `LineCost` regardless of `RefundedQuantity`;
+      fixed the same way, or the dashboard and the ledger-based P&L would have started disagreeing
+      the moment only one of them accounted for returns.
+- [x] **`TaxCollected` was never reversed on a refund**, so the liability stayed on the balance
+      sheet forever even after the customer got that portion of the money back — wrong for actual
+      VAT reporting (NBR in Bangladesh, HMRC in the UK), which needs output tax to fall when a sale
+      unwinds. Both refund paths now write a `TaxCollected` reversal, computed from the order's own
+      snapshotted `TaxRatePercent`/`PricesIncludeTax` — never the Business's live tax settings, so
+      a later rate change can't rewrite what a historical order actually owed.
+- [x] **The full-order refund amount didn't match how Revenue was booked.** `RecordRevenueAsync`
+      books net of tax (`Total − TaxAmount`); the old refund line booked the gross remainder
+      (`Total − RefundedAmount`, tax included). A fully-refunded taxed order left
+      `Revenue − Refund` permanently negative by the tax amount instead of netting to zero. Fixed
+      by booking the `Refund` entry net of tax too — the tax portion lives only in the new
+      `TaxCollected` reversal now, not double-counted in both places.
+- [x] **`LedgerEntryType.GiftCardIssued`/`GiftCardRedeemed` were dead code with doc comments that
+      described behaviour that was never implemented** — two comments (on `GiftCard` and
+      `IGiftCardService`) asserted that issuing a card wrote a `GiftCardIssued` ledger entry; grep
+      confirmed neither enum member was ever written anywhere. Removed both members and corrected
+      the comments: gift-card issuance is staff-only with no payment captured to book, and
+      redemption needs no entry either, since the order it pays for already books full Revenue at
+      delivery regardless of tender type. `GetBalanceSheetAsync`'s gift-card liability was already,
+      correctly, a live sum of `RemainingBalance` across active cards — not ledger-derived — so
+      nothing about the balance sheet itself changed, only the removal of unimplemented types and
+      the comments that misdescribed them.
+
+**Mechanism:** a COGS or tax reversal writes a *negative* entry of the same `LedgerEntryType`
+(`Refund` already established this precedent as Revenue's offset; `CostOfGoodsSold` and
+`TaxCollected` now get the same treatment) rather than inventing distinct `...Reversed` types —
+`AccountingService`'s `Sum(entries, type)` keeps netting correctly with nothing new to remember to
+fold in. `ITaxService` gained `ExtractTax(amount, ratePercent, pricesIncludeTax)`, inverting
+`Quote`'s own per-line formula, so both `OrderService` and the newly-injected `ITaxService` in
+`ReturnService` compute the tax portion of a refund identically to how tax was computed on the way
+in — no duplicated, driftable formula.
+
+Seven new tests (131 → 138): full-refund tax/COGS reversal on a taxed, costed order; a manual
+full refund after a prior partial return only reversing the quantity actually still outstanding;
+partial-return COGS/tax reversal from specific returned lines; the dashboard COGS fix; three direct
+`ITaxService.ExtractTax` cases. Not touched: `AnalyticsService`'s SuperOffice-level revenue, which
+has its own, different simplification (it doesn't net `RefundedAmount` or compute COGS at all) —
+out of scope for these four bugs, not silently left broken by this change.
+
+---
+
+### 9.49 Exchange — the other half of Refund/Exchange, implemented (2026-08-18)
+
+Asked whether the Refund/Exchange system was fully implemented. Refund: yes (and just hardened
+further in §9.48). Exchange: no — `ReturnResolution.Exchange` was a selectable enum value on the
+customer-facing return request, and the Shop blueprint already documented it as one of three valid
+`resolution` values, but grep confirmed it was never once branched on in `ReturnService`. Choosing
+it did exactly what `Refund` did: same `/refund` endpoint, same `LedgerEntryType.Refund` entry, no
+replacement-item selection anywhere on the request, no inventory movement for a new item — a dead
+enum value, same pattern as the `GiftCardIssued`/`GiftCardRedeemed` case §9.48 removed.
+
+Scoped deliberately to **same product, same price, different variant only** (e.g. a size or color
+swap) rather than any product at any price — this system has no payment gateway (§9.6), so a
+price-changing exchange would need to invent a way to collect a shortfall or refund an overage that
+nothing else here does. A same-price swap needs neither.
+
+- [x] **`ReturnItem` gained `DesiredVariantId`/`DesiredVariantSummary`**, and `ReturnLineRequest`
+      gained an optional `DesiredVariantId` — required when the request's `Resolution` is
+      `Exchange`, rejected as a 409 if supplied otherwise (so a frontend bug can't silently record
+      an exchange intent nobody asked for).
+- [x] **`RequestAsync` validates the desired variant against the *same* `Product` the returned
+      line belongs to** (there is no separate product-id field for it, so cross-product exchange
+      is structurally impossible, not just discouraged) **and against price** — the desired
+      variant's effective price (`variant.PriceOverride ?? product.EffectivePrice`) must equal
+      what the customer actually paid (`orderItem.UnitPrice`, not the product's live price, so a
+      catalog price change since the order doesn't cause a false accept or reject). A mismatch
+      409s with both prices named.
+- [x] **New `IReturnService.ExchangeAsync` + `POST .../returns/{returnId}/exchange`**, parallel to
+      `RefundAsync`/`/refund`, gated the same way on `Received`. Each rejects the other's
+      resolution now: `/refund` 409s on an `Exchange`-resolution return, `/exchange` 409s on
+      anything else. **Staff-tier, not Admin-tier like `/refund`** — none of §9.3's reasoning for
+      restricting refund to Admin applies to a call that moves no money.
+- [x] **Ships the desired variant via `InventoryService.RecordMovementAsync`** (409s if it's gone
+      out of stock since the request — a real possibility this doesn't pretend can't happen) and
+      **updates the order's own item** to reflect what the customer actually ends up with: an
+      in-place `VariantId` swap when the whole line exchanges, or a new line when only part of the
+      quantity does (so the order's item list never silently loses the split between what was kept
+      and what was swapped).
+- [x] **Writes no ledger entry, and leaves `RefundedAmount`/`RefundedQuantity` untouched** — the
+      one rule this whole feature is built around. A same-price exchange moves no money: the
+      customer still holds exactly the value they already paid for, just in a different variant.
+      Doing anything else here — writing a token `Refund` entry, incrementing `RefundedQuantity` —
+      would misdescribe what happened and corrupt §9.48's "what's still outstanding" math for a
+      later, real refund on the same order.
+- [x] **New `ReturnStatus.Exchanged`**, a distinct terminal state from `Refunded` — reusing
+      `Refunded` for a non-refund outcome would have repeated exactly the kind of
+      behavior-misdescribed-by-a-name mistake §9.48 just finished cleaning up elsewhere in this
+      same module.
+- [x] Eight new tests (138 → 146): request-time validation (accepts a same-price swap, rejects a
+      price-changing one, rejects a missing desired variant on Exchange, rejects a desired variant
+      on non-Exchange), the exchange happy path (stock deducted/restocked correctly, order line
+      swapped, no ledger entry, `RefundedAmount` untouched), the partial-quantity split, and both
+      directions of the resolution-mismatch guard.
+
+Updated `docs/BACKOFFICE_FRONTEND_BLUEPRINT.md` §7.11 with the full endpoint, request/response
+shapes, and the reasoning above (main ask this round), plus `docs/ANTIVALY_SHOP_BLUEPRINT.md`'s
+`CreateReturnRequest`/`ReturnResponse` types — the request/response shapes are shared with the
+customer-facing return endpoint, which is the one place a customer actually supplies
+`desiredVariantId`.
+
+---
+
 ## 10. Progress Log
 
 Newest entry first. Keep entries short — what happened and why, not a diff.
+
+### 2026-08-18 — Exchange, the unimplemented half of Refund/Exchange (§9.49)
+Asked whether Refund/Exchange was fully implemented. Refund was; `ReturnResolution.Exchange` was
+a selectable value on the customer-facing return request (and already documented as one in the
+Shop blueprint) but never once branched on anywhere — choosing it silently behaved exactly like a
+cash Refund. Implemented it scoped to same-product/same-price variant swaps only (no payment
+gateway exists to collect a shortfall or refund an overage on a price-changing exchange).
+`ReturnItem`/`ReturnLineRequest` gained `DesiredVariantId`; `RequestAsync` validates it against the
+same product and against what was actually paid, 409ing on a price mismatch. New
+`ExchangeAsync`/`POST .../returns/{returnId}/exchange`, Staff-tier (it moves no money, unlike
+Admin-tier `/refund`), gated the same way on `Received`, each endpoint now rejecting the other's
+resolution. Ships the new variant, restocks/updates the order's line (splits it on a partial-
+quantity exchange), and — the core of the feature — writes no ledger entry and leaves
+RefundedAmount/RefundedQuantity untouched, since no money moved. New terminal `ReturnStatus.
+Exchanged`, distinct from `Refunded`. Eight new tests (138 → 146). Updated the BackOffice
+blueprint's §7.11 with the full endpoint and reasoning, and the Shop blueprint's shared
+request/response types.
+
+### 2026-08-18 — Accounting audit against BAS/UK GAAP (§9.48)
+Asked to check the accounting module against Bangladeshi Accounting Standards / UK GAAP. Answer:
+it doesn't, and can't without a full double-entry rearchitecture — both regimes require accrual
+double-entry bookkeeping and statutory statements this single-entry, cash-basis ledger was never
+scoped to produce (§9.16/§9.31, unchanged by design). Offered the rearchitecture; declined in
+favour of fixing four concrete bugs the audit surfaced instead. `CostOfGoodsSold` and
+`TaxCollected` were never reversed on a refund or return, even though the goods are physically
+restocked — a returned unit stayed permanently expensed (double-expensed if resold) and its tax
+stayed on the books as owed forever. Both refund paths (`OrderService`'s manual full refund,
+`ReturnService`'s partial-return refund) now write reversal entries — a negative amount of the
+same `LedgerEntryType`, the same trick `Refund` already used to offset `Revenue`. Fixed the same
+bug's second, independent copy in `AccountingService.GetDashboardAsync`'s COGS calc, which read
+straight from `Order.Items` rather than the ledger. Also fixed the full-order refund amount, which
+used to book gross (`Total − RefundedAmount`, tax included) against a Revenue line booked net of
+tax — left `Revenue − Refund` permanently negative by the tax amount on a full refund; now books
+net of tax to match, with the tax portion carried only in the new `TaxCollected` reversal. Removed
+`LedgerEntryType.GiftCardIssued`/`GiftCardRedeemed` — dead enum members with doc comments
+asserting behaviour that was never implemented; the balance-sheet gift-card liability was already,
+correctly, a live sum of card balances rather than ledger-derived. Added `ITaxService.ExtractTax`
+so both refund paths invert the original tax-quote formula identically instead of duplicating it.
+Seven new tests (131 → 138).
+
+### 2026-08-18 — Pickup orders get their own status flow (§9.47)
+A client flagged that BackOffice moved a Pickup order through `Confirmed → OutForDelivery →
+Delivered`, same as a courier delivery — nothing was ever actually "out for delivery." Added
+`OrderStatus.AwaitingPickup`/`PickedUp` and split `OrderService`'s single transition table into
+`DeliveryTransitions`/`PickupTransitions`, chosen by `order.FulfillmentMethod`; a Pickup order now
+goes `Confirmed → AwaitingPickup → PickedUp`. Guarded the two spots that used to auto-advance any
+order to `OutForDelivery` regardless of fulfillment method (`AssignDeliveryAgentAsync`,
+`UpdateShipmentAsync`) — both could otherwise have stranded a Pickup order in a state its own
+transition table doesn't recognise. Introduced `OrderStatusExtensions.IsFulfilled()` so revenue
+recognition, return eligibility, verified-purchase reviews, and the review-request sweep all treat
+`PickedUp` the same as `Delivered` instead of only knowing about the latter — six call sites fixed,
+each written as a direct comparison rather than the extension method wherever the predicate is
+sent to MongoDB as a query (extension methods don't translate). Added the `order.picked_up`
+webhook event alongside the existing `order.delivered`. Ten new tests (121 → 131). Updated the
+BackOffice blueprint (staff's status dropdown now branches on `fulfillmentMethod`) and the
+SuperOffice blueprint's webhook event list in the same session.
+
+### 2026-08-18 — Promotion codes rejected at apply-time for eligible customers (§9.46)
+A client asked to make gift cards and promotional codes "functionable" in the cart. Gift-card
+redemption audited clean end-to-end (confirmed with the client this meant applying an existing
+code, not a self-service gift-card-purchase flow, which is a separate, much larger feature that
+wasn't in scope here). Promotion codes had a real bug: `CartService.ApplyPromotionCodeAsync`
+validated a newly-entered code against a `PromotionContext` with `CustomerGroupIds` hardcoded to
+`[]` and `IsFirstOrder` hardcoded to `false`, instead of the customer's actual group memberships
+and order history — so a customer-group-targeted or first-order-only promotion rejected eligible
+customers at the apply step, even though the same code would have priced correctly moments later
+through the real pricing pass. Fixed by extracting that lookup into a single shared
+`IPricingService.BuildPromotionContextAsync`, used by both `PricingService.ComputeDiscountsAsync`
+and the cart's apply-time check, so the two can't disagree again. Two new tests (119 → 121). No
+API shape changed, so only a short correction note went into the Antivaly Shop blueprint.
 
 ### 2026-08-18 — Cart coupon removal — the missing symmetric DELETE (§9.45)
 Caught by cross-checking the live Swagger spec against the Antivaly frontend: `DELETE

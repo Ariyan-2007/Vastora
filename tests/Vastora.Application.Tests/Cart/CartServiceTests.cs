@@ -16,7 +16,10 @@ namespace Vastora.Application.Tests.Cart;
 public class CartServiceTests
 {
     private static (ICartService CartService, IGiftCardService GiftCards, IStoreCreditService StoreCredit) Create(
-        Business business, Product product, FakeMongoRepository<Coupon>? coupons = null)
+        Business business, Product product,
+        FakeMongoRepository<Coupon>? coupons = null,
+        FakeMongoRepository<Promotion>? promotions = null,
+        FakeMongoRepository<CustomerGroup>? customerGroups = null)
     {
         var carts = new FakeMongoRepository<CartEntity>();
         var products = new FakeMongoRepository<Product>();
@@ -25,8 +28,8 @@ public class CartServiceTests
         businesses.Seed(business);
 
         var couponService = new CouponService(coupons ?? new FakeMongoRepository<Coupon>());
-        var promotionService = new PromotionService(new FakeMongoRepository<Promotion>(), new FakeMongoRepository<Order>());
-        var customerGroupService = new CustomerGroupService(new FakeMongoRepository<CustomerGroup>(), new FakeMongoRepository<AppUser>());
+        var promotionService = new PromotionService(promotions ?? new FakeMongoRepository<Promotion>(), new FakeMongoRepository<Order>());
+        var customerGroupService = new CustomerGroupService(customerGroups ?? new FakeMongoRepository<CustomerGroup>(), new FakeMongoRepository<AppUser>());
         var shippingService = new ShippingService(new FakeMongoRepository<ShippingZone>());
         var taxService = new TaxService();
         var giftCardService = new GiftCardService(new FakeMongoRepository<GiftCard>(), businesses);
@@ -182,5 +185,62 @@ public class CartServiceTests
         Assert.Null(result.ShippingMethodName);
         Assert.Empty(result.ShippingOptions);
         Assert.Equal(100m, result.AmountDue);
+    }
+
+    [Fact]
+    public async Task ApplyPromotionCodeAsync_AcceptsACustomerGroupTargetedCode_ForAnEligibleMember()
+    {
+        // §9.46: ApplyPromotionCodeAsync used to validate against a PromotionContext with
+        // CustomerGroupIds hardcoded to [] — so a promotion actually scoped to a group this
+        // customer belongs to was rejected with "isn't valid for this cart" even though the very
+        // same code would have applied correctly moments later, at the real pricing pass.
+        var business = new Business { Id = "biz-1", Currency = "USD" };
+        var product = SimpleProduct();
+
+        var customerGroups = new FakeMongoRepository<CustomerGroup>();
+        customerGroups.Seed(new CustomerGroup { Id = "vip", BusinessId = "biz-1", IsActive = true, CustomerUserIds = ["cust-1"] });
+
+        var promotions = new FakeMongoRepository<Promotion>();
+        promotions.Seed(new Promotion
+        {
+            BusinessId = "biz-1", Name = "VIP10", Code = "VIP10",
+            Effect = PromotionEffect.PercentageOff, Value = 10m,
+            CustomerGroupIds = ["vip"], IsActive = true, StartsAt = DateTime.UtcNow.AddDays(-1)
+        });
+
+        var (cartService, _, _) = Create(business, product, promotions: promotions, customerGroups: customerGroups);
+
+        var owner = CartOwner.ForCustomer("cust-1");
+        await cartService.AddItemAsync("t1", "biz-1", owner, new AddCartItemRequest(product.Id, 1), CancellationToken.None);
+
+        var result = await cartService.ApplyPromotionCodeAsync("biz-1", owner, new ApplyCartCouponRequest("VIP10"), CancellationToken.None);
+
+        Assert.Contains("VIP10", result.PromotionCodes);
+        Assert.Equal(10m, result.DiscountTotal);
+    }
+
+    [Fact]
+    public async Task ApplyPromotionCodeAsync_AcceptsAFirstOrderOnlyCode_ForACustomerWithNoPriorOrders()
+    {
+        var business = new Business { Id = "biz-1", Currency = "USD" };
+        var product = SimpleProduct();
+
+        var promotions = new FakeMongoRepository<Promotion>();
+        promotions.Seed(new Promotion
+        {
+            BusinessId = "biz-1", Name = "WELCOME15", Code = "WELCOME15",
+            Effect = PromotionEffect.PercentageOff, Value = 15m,
+            FirstOrderOnly = true, IsActive = true, StartsAt = DateTime.UtcNow.AddDays(-1)
+        });
+
+        var (cartService, _, _) = Create(business, product, promotions: promotions);
+
+        var owner = CartOwner.ForCustomer("cust-1");
+        await cartService.AddItemAsync("t1", "biz-1", owner, new AddCartItemRequest(product.Id, 1), CancellationToken.None);
+
+        var result = await cartService.ApplyPromotionCodeAsync("biz-1", owner, new ApplyCartCouponRequest("WELCOME15"), CancellationToken.None);
+
+        Assert.Contains("WELCOME15", result.PromotionCodes);
+        Assert.Equal(15m, result.DiscountTotal);
     }
 }

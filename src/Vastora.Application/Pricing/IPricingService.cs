@@ -1,3 +1,4 @@
+using Vastora.Application.Promotions;
 using Vastora.Domain.Entities;
 
 namespace Vastora.Application.Pricing;
@@ -24,6 +25,22 @@ public interface IPricingService
     Task<PriceBreakdown> PriceAsync(
         PricingContext context,
         IReadOnlyList<ResolvedLine> lines,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// §9.46. The exact customer-group/first-order lookup <see cref="PriceAsync"/> uses
+    /// internally to build the <see cref="PromotionContext"/> it evaluates against — exposed so a
+    /// caller validating a code *before* a full pricing pass (namely
+    /// <c>CartService.ApplyPromotionCodeAsync</c>) uses the real customer state rather than a
+    /// stand-in. Two independent context-builders is how a customer-group-targeted or
+    /// first-order-only promotion could pass at checkout but be rejected at the "apply this code"
+    /// step with a wrong "not valid for this cart" error.
+    /// </summary>
+    Task<PromotionContext> BuildPromotionContextAsync(
+        string businessId,
+        string? customerUserId,
+        IReadOnlyList<ResolvedLine> lines,
+        IReadOnlyList<string> enteredCodes,
         CancellationToken ct = default);
 
     /// <summary>

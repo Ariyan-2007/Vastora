@@ -171,8 +171,11 @@ public class LifecycleNotificationService(
         var sent = 0;
 
         var window = DateTime.UtcNow.AddDays(-daysAfterDelivery);
+        // §9.47: written as a direct comparison rather than OrderStatus.IsFulfilled() — this
+        // predicate is translated into a real MongoDB query by the driver's LINQ provider, which
+        // (unlike the in-memory checks elsewhere) cannot execute an arbitrary C# extension method.
         var recentlyDelivered = await orders.FindPagedAsync(
-            o => o.Status == OrderStatus.Delivered && o.PlacedAt < window,
+            o => (o.Status == OrderStatus.Delivered || o.Status == OrderStatus.PickedUp) && o.PlacedAt < window,
             PageRequest.Of(1, PageRequest.MaxPageSize), o => o.PlacedAt, ct: ct);
 
         foreach (var order in recentlyDelivered.Items.Where(o => !string.IsNullOrEmpty(o.CustomerUserId)))

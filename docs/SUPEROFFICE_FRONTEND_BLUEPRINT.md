@@ -407,8 +407,10 @@ type ApiKeyResponse = {
 ```
 
 **Event names** (also served by `/webhooks/events`, prefer that over hardcoding):
-`order.created`, `order.status_changed`, `order.delivered`, `product.low_stock`,
-`return.requested`, `review.submitted`.
+`order.created`, `order.status_changed`, `order.delivered`, `order.picked_up` (added 2026-08-18,
+§9.47 — the Pickup-order equivalent of `order.delivered`; fired instead of it, never alongside
+it, when a Pickup order reaches `PickedUp`), `product.low_stock`, `return.requested`,
+`review.submitted`.
 
 Things to build around:
 

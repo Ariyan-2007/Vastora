@@ -16,10 +16,7 @@ public enum LedgerEntryType
     /// </summary>
     CostOfGoodsSold = 4,
     /// <summary>Tax collected on a delivered order — a liability, deliberately not revenue (§9.19).</summary>
-    TaxCollected = 5,
-    /// <summary>Gift card sold: cash in, but a liability until redeemed (§9.24).</summary>
-    GiftCardIssued = 6,
-    GiftCardRedeemed = 7
+    TaxCollected = 5
 }
 
 /// <summary>Where a shopper-visible content block appears on a storefront — §9.30.</summary>

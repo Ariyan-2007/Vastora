@@ -163,6 +163,19 @@ public static class EmailTemplates
         return (subject, plain, Layout(business, subject, body.ToString()));
     }
 
+    /// <summary>§9.49. No amount to report — a same-price exchange moved no money.</summary>
+    public static (string Subject, string PlainBody, string HtmlBody) ExchangeProcessed(Business? business, ReturnRequest entity)
+    {
+        var subject = $"Exchange processed for {entity.RmaNumber}";
+        var plain = $"Your exchange for order {entity.OrderNumber} has shipped.";
+
+        var body = new StringBuilder()
+            .Append(Paragraph($"Your exchange for order <strong>{Enc(entity.OrderNumber)}</strong> has shipped."))
+            .Append(ReturnItemsTable(entity));
+
+        return (subject, plain, Layout(business, subject, body.ToString()));
+    }
+
     public static (string Subject, string PlainBody, string HtmlBody) AbandonedCart(
         Business? business, string? recipientName, List<string> itemNames, int itemCount, string? shopLink, string? unsubscribeUrl)
     {

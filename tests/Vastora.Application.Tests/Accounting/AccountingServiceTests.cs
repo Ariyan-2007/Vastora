@@ -10,11 +10,14 @@ namespace Vastora.Application.Tests.Accounting;
 
 public class AccountingServiceTests
 {
-    private static (AccountingService Service, FakeMongoRepository<LedgerEntry> LedgerEntries, FakeMongoRepository<Expense> Expenses, FakeMongoRepository<Product> Products) Create()
+    private static (AccountingService Service, FakeMongoRepository<LedgerEntry> LedgerEntries, FakeMongoRepository<Expense> Expenses,
+        FakeMongoRepository<Product> Products, FakeMongoRepository<Order> Orders, FakeMongoRepository<Business> Businesses) Create()
     {
         var ledgerEntries = new FakeMongoRepository<LedgerEntry>();
         var expenses = new FakeMongoRepository<Expense>();
         var products = new FakeMongoRepository<Product>();
+        var orders = new FakeMongoRepository<Order>();
+        var businesses = new FakeMongoRepository<Business>();
         var tenants = new FakeMongoRepository<TenantAccount>();
         var productService = new ProductService(products, tenants, new FakeMongoRepository<Category>());
         var stockStore = new FakeProductStockStore(products);
@@ -23,18 +26,18 @@ public class AccountingServiceTests
         var service = new AccountingService(
             ledgerEntries, expenses,
             new FakeMongoRepository<GiftCard>(),
-            new FakeMongoRepository<Order>(),
-            new FakeMongoRepository<Business>(),
+            orders,
+            businesses,
             new FakeMongoRepository<ReturnRequest>(),
             inventoryService);
 
-        return (service, ledgerEntries, expenses, products);
+        return (service, ledgerEntries, expenses, products, orders, businesses);
     }
 
     [Fact]
     public async Task GetProfitAndLossAsync_OnlyCountsEntriesInsideWindow_AndComputesNetProfit()
     {
-        var (service, ledgerEntries, expenses, _) = Create();
+        var (service, ledgerEntries, expenses, _, _, _) = Create();
         var inWindow = new DateTime(2026, 6, 15, 0, 0, 0, DateTimeKind.Utc);
         var outsideWindow = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
 
@@ -65,7 +68,7 @@ public class AccountingServiceTests
     [Fact]
     public async Task GetProfitAndLossAsync_FlagsRevenueOrdersThatContributedNoCost()
     {
-        var (service, ledgerEntries, _, _) = Create();
+        var (service, ledgerEntries, _, _, _, _) = Create();
         var at = new DateTime(2026, 6, 15, 0, 0, 0, DateTimeKind.Utc);
 
         ledgerEntries.Seed(
@@ -84,7 +87,7 @@ public class AccountingServiceTests
     [Fact]
     public async Task GetBalanceSheetAsync_ValuesInventoryAtCost_NotRetail()
     {
-        var (service, ledgerEntries, expenses, products) = Create();
+        var (service, ledgerEntries, expenses, products, _, _) = Create();
         ledgerEntries.Seed(new LedgerEntry { BusinessId = "biz-1", Type = LedgerEntryType.Revenue, Amount = 1000m });
         expenses.Seed(new Expense { BusinessId = "biz-1", Amount = 200m });
         products.Seed(new Product { BusinessId = "biz-1", StockQuantity = 10, Price = 15m, CostPrice = 9m });
@@ -102,7 +105,7 @@ public class AccountingServiceTests
     [Fact]
     public async Task GetBalanceSheetAsync_CarriesTaxCollectedAsALiability_NotAsProfit()
     {
-        var (service, ledgerEntries, _, _) = Create();
+        var (service, ledgerEntries, _, _, _, _) = Create();
         ledgerEntries.Seed(
             new LedgerEntry { BusinessId = "biz-1", Type = LedgerEntryType.Revenue, Amount = 1000m },
             new LedgerEntry { BusinessId = "biz-1", Type = LedgerEntryType.TaxCollected, Amount = 150m });
@@ -116,10 +119,36 @@ public class AccountingServiceTests
         Assert.Equal(1000m, result.NetPosition);
     }
 
+    /// <summary>
+    /// §9.48. GetDashboardAsync computes COGS straight from Order.Items rather than the ledger,
+    /// so it has its own copy of the same bug: summing full LineCost regardless of
+    /// RefundedQuantity disagreed with the ledger-based P&amp;L the moment a return reversed
+    /// CostOfGoodsSold there but not here.
+    /// </summary>
+    [Fact]
+    public async Task GetDashboardAsync_ExcludesTheCostOfAnyReturnedQuantity()
+    {
+        var (service, _, _, _, orders, businesses) = Create();
+        var business = businesses.Seed(new Business { Currency = "USD" })[0];
+        var placedAt = new DateTime(2026, 6, 15, 0, 0, 0, DateTimeKind.Utc);
+
+        orders.Seed(new Order
+        {
+            BusinessId = business.Id, Status = OrderStatus.Delivered, PlacedAt = placedAt, Total = 300m,
+            Items = [new OrderItem { ProductId = "p1", ProductName = "Widget", UnitPrice = 100m, UnitCost = 60m, Quantity = 3, RefundedQuantity = 1 }]
+        });
+
+        var result = await service.GetDashboardAsync(business.Id,
+            new DateTime(2026, 6, 1, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 6, 30, 0, 0, 0, DateTimeKind.Utc), CancellationToken.None);
+
+        // Only the two still-owned units are costed — 2 × 60 = 120, not 3 × 60 = 180.
+        Assert.Equal(180m, result.GrossProfit); // 300 revenue - 120 cogs
+    }
+
     [Fact]
     public async Task CreateExpense_ThenUpdateThenDelete_RoundTrips()
     {
-        var (service, _, _, _) = Create();
+        var (service, _, _, _, _, _) = Create();
 
         var created = await service.CreateExpenseAsync("t1", "biz-1",
             new CreateExpenseRequest("Rent", 500m, "Monthly office rent", DateTime.UtcNow), "user-1", CancellationToken.None);
