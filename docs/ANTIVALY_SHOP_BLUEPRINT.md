@@ -377,6 +377,7 @@ the structured facet filters over free-text search wherever the UI allows it.
 | PUT | `/api/shop/cart/items/{productId}?businessId=` | `{ quantity, variantId? }` (0 removes) | `CartResponse` |
 | DELETE | `/api/shop/cart/items/{productId}?variantId=&businessId=` | — | `CartResponse` |
 | POST | `/api/shop/cart/coupon?businessId=` | `{ code }` | `CartResponse` |
+| DELETE | `/api/shop/cart/coupon?businessId=` | — | `CartResponse` — added 2026-08-18, §9.45 |
 | POST | `/api/shop/cart/promotions?businessId=` | `{ code }` | `CartResponse` — **stackable**, unlike the single coupon |
 | DELETE | `/api/shop/cart/promotions/{code}?businessId=` | — | `CartResponse` |
 | POST | `/api/shop/cart/gift-cards?businessId=` | `{ code }` | `CartResponse` — added 2026-08-18, §9.43 |
@@ -400,6 +401,12 @@ the structured facet filters over free-text search wherever the UI allows it.
 **On login or registration, call `POST /api/shop/cart/merge?guestToken=<token>` before anything
 else.** Quantities are summed rather than replaced, and the guest cart is deleted. Skip this and
 the shopper's pre-login cart is silently orphaned.
+
+> **`DELETE /api/shop/cart/coupon`, added 2026-08-18 (§9.45).** This didn't exist before — only
+> `POST` did — even though the promotions and gift-card endpoints both already had a matching
+> `DELETE`. If you built a "remove coupon" action around clearing the cart and re-adding every
+> item, or around some other workaround, switch it to this call; it only touches `couponCode`,
+> nothing else on the cart.
 
 ```ts
 type CartResponse = {

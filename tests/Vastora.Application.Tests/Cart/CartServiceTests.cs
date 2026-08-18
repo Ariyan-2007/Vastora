@@ -15,7 +15,8 @@ namespace Vastora.Application.Tests.Cart;
 
 public class CartServiceTests
 {
-    private static (ICartService CartService, IGiftCardService GiftCards, IStoreCreditService StoreCredit) Create(Business business, Product product)
+    private static (ICartService CartService, IGiftCardService GiftCards, IStoreCreditService StoreCredit) Create(
+        Business business, Product product, FakeMongoRepository<Coupon>? coupons = null)
     {
         var carts = new FakeMongoRepository<CartEntity>();
         var products = new FakeMongoRepository<Product>();
@@ -23,7 +24,7 @@ public class CartServiceTests
         var businesses = new FakeMongoRepository<Business>();
         businesses.Seed(business);
 
-        var couponService = new CouponService(new FakeMongoRepository<Coupon>());
+        var couponService = new CouponService(coupons ?? new FakeMongoRepository<Coupon>());
         var promotionService = new PromotionService(new FakeMongoRepository<Promotion>(), new FakeMongoRepository<Order>());
         var customerGroupService = new CustomerGroupService(new FakeMongoRepository<CustomerGroup>(), new FakeMongoRepository<AppUser>());
         var shippingService = new ShippingService(new FakeMongoRepository<ShippingZone>());
@@ -69,6 +70,35 @@ public class CartServiceTests
         Assert.Equal(40m, result.GiftCardTotal);
         Assert.Equal(60m, result.AmountDue);
         Assert.Contains(issued.Code!.ToUpperInvariant(), result.GiftCardCodes);
+    }
+
+    [Fact]
+    public async Task RemoveCouponAsync_ClearsTheAppliedCoupon()
+    {
+        // §9.45: DELETE .../coupon didn't exist at all — only promotions and gift cards had a
+        // matching removal endpoint, so a shopper could apply a coupon but never take it back off
+        // short of clearing the whole cart.
+        var business = new Business { Id = "biz-1", Currency = "USD" };
+        var product = SimpleProduct();
+        var coupons = new FakeMongoRepository<Coupon>();
+        coupons.Seed(new Coupon
+        {
+            BusinessId = "biz-1", Code = "SAVE10", DiscountType = DiscountType.Percentage, DiscountValue = 10m,
+            StartsAt = DateTime.UtcNow.AddDays(-1), IsActive = true
+        });
+        var (cartService, _, _) = Create(business, product, coupons);
+
+        var owner = CartOwner.ForCustomer("cust-1");
+        await cartService.AddItemAsync("t1", "biz-1", owner, new AddCartItemRequest(product.Id, 1), CancellationToken.None);
+        var applied = await cartService.ApplyCouponAsync("biz-1", owner, new ApplyCartCouponRequest("SAVE10"), CancellationToken.None);
+        Assert.Equal("SAVE10", applied.CouponCode);
+        Assert.Equal(10m, applied.DiscountTotal);
+
+        var result = await cartService.RemoveCouponAsync("biz-1", owner, CancellationToken.None);
+
+        Assert.Null(result.CouponCode);
+        Assert.Equal(0m, result.DiscountTotal);
+        Assert.Equal(100m, result.AmountDue);
     }
 
     [Fact]

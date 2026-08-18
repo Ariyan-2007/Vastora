@@ -15,6 +15,8 @@ public interface ICartService
 
     Task<CartResponse> ApplyCouponAsync(string businessId, CartOwner owner, ApplyCartCouponRequest request, CancellationToken ct = default);
 
+    Task<CartResponse> RemoveCouponAsync(string businessId, CartOwner owner, CancellationToken ct = default);
+
     /// <summary>§9.23. Promotion codes are a list — several can stack, unlike the single legacy coupon.</summary>
     Task<CartResponse> ApplyPromotionCodeAsync(string businessId, CartOwner owner, ApplyCartCouponRequest request, CancellationToken ct = default);
 

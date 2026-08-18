@@ -64,6 +64,14 @@ public class ShopCartController(ICurrentUserContext currentUser, ICartService ca
         return Ok(result);
     }
 
+    [HttpDelete("coupon")]
+    [AllowAnonymous]
+    public async Task<ActionResult<CartResponse>> RemoveCoupon([FromQuery] string? businessId, CancellationToken ct)
+    {
+        var result = await cartService.RemoveCouponAsync(ResolveBusinessId(businessId), ResolveOwner(), ct);
+        return Ok(result);
+    }
+
     /// <summary>§9.23. Separate from the legacy single coupon — several promotion codes can stack.</summary>
     [HttpPost("promotions")]
     [AllowAnonymous]

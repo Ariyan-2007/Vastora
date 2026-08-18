@@ -120,6 +120,14 @@ public class CartService(
         return await MapAsync(cart, owner, ct);
     }
 
+    public async Task<CartResponse> RemoveCouponAsync(string businessId, CartOwner owner, CancellationToken ct = default)
+    {
+        var cart = await FindAsync(businessId, owner, ct);
+        cart.CouponCode = null;
+        await carts.UpdateAsync(cart, ct);
+        return await MapAsync(cart, owner, ct);
+    }
+
     public async Task<CartResponse> ApplyPromotionCodeAsync(string businessId, CartOwner owner, ApplyCartCouponRequest request, CancellationToken ct = default)
     {
         var cart = await FindAsync(businessId, owner, ct);

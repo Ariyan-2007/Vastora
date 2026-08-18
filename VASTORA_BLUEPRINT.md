@@ -369,6 +369,7 @@ via a `CatalogQuery` querystring rather than two loose parameters.
 - The whole cart controller is now `[AllowAnonymous]`. A signed-in Customer is scoped by JWT; a
   guest sends `X-Cart-Token` (minted server-side on first write, returned as `guestToken`) plus
   `?businessId=`. An authenticated identity always wins over any token that's also present.
+- `POST/DELETE /api/shop/cart/coupon` — `DELETE` added 2026-08-18 (§9.45); every sibling code type (promotions, gift cards) already had a matching removal endpoint, coupon never did — a shopper could apply one but only take it off by clearing the whole cart.
 - `POST/DELETE /api/shop/cart/promotions[/{code}]` — stackable promotion codes, separate from the single legacy coupon.
 - `POST/DELETE /api/shop/cart/gift-cards[/{code}]` — apply/remove a gift card code on the cart itself (§9.43; previously only settable at final checkout, priced nowhere before that).
 - `PUT /api/shop/cart/store-credit` — Customer only; opts the cart in/out of spending store credit, mirroring `CheckoutRequest.UseStoreCredit` (§9.43).
@@ -1497,9 +1498,34 @@ it isn't mistaken for fixed.
 
 ---
 
+### 9.45 Cart coupon removal — the missing symmetric DELETE — done (2026-08-18)
+
+Found while cross-checking the live Swagger spec against the Antivaly frontend: every other
+cart-level code type had a matching removal endpoint — `DELETE /api/shop/cart/promotions/{code}`,
+`DELETE /api/shop/cart/gift-cards/{code}` — but the original, single-slot `CouponCode` never got
+one. A shopper could `POST /api/shop/cart/coupon` to apply a code and then had no way to take it
+back off short of `DELETE /api/shop/cart` (clearing the entire basket, items included).
+
+- [x] `ICartService.RemoveCouponAsync(businessId, owner, ct)` / `CartService` — sets
+      `Cart.CouponCode = null` and re-prices, same shape as `RemovePromotionCodeAsync`.
+- [x] `DELETE /api/shop/cart/coupon?businessId=` — `[AllowAnonymous]`, matching every other cart
+      mutation endpoint (guest and Customer both); no route parameter needed since a cart only
+      ever holds the one coupon slot.
+- [x] One new test, `RemoveCouponAsync_ClearsTheAppliedCoupon` (118 → 119).
+
+---
+
 ## 10. Progress Log
 
 Newest entry first. Keep entries short — what happened and why, not a diff.
+
+### 2026-08-18 — Cart coupon removal — the missing symmetric DELETE (§9.45)
+Caught by cross-checking the live Swagger spec against the Antivaly frontend: `DELETE
+/api/shop/cart/promotions/{code}` and `DELETE /api/shop/cart/gift-cards/{code}` both exist, but
+the original single-slot coupon never got a matching removal endpoint — only `POST .../coupon`
+did. Added `ICartService.RemoveCouponAsync`/`CartService` (nulls `Cart.CouponCode`, re-prices) and
+`DELETE /api/shop/cart/coupon?businessId=`, `[AllowAnonymous]` like every sibling cart-mutation
+endpoint. One new test (118 → 119). Updated the Antivaly Shop blueprint in the same session.
 
 ### 2026-08-18 — Cart delivery fee visible in the preview, and fulfillment-aware (§9.44)
 A client reported the cart API said nothing about delivery fee, even after a coupon was applied,
