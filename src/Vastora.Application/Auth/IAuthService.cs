@@ -15,11 +15,23 @@ public interface IAuthService
 
     Task LogoutAsync(string refreshToken, CancellationToken ct = default);
 
-    /// <summary>BackOffice/SuperOffice/Platform realm — always succeeds, doesn't reveal whether the email exists (§9.10).</summary>
-    Task RequestPasswordResetAsync(string email, CancellationToken ct = default);
+    /// <summary>
+    /// BackOffice/SuperOffice/Platform realm — always succeeds, doesn't reveal whether the email
+    /// exists (§9.10). <paramref name="redirectBaseUrl"/> is the caller's own origin (e.g.
+    /// <c>window.location.origin</c>) — honored only if it matches the trust anchor for that
+    /// user's own realm: <c>Business.BackOfficeDomain</c> for BusinessAdmin/BusinessStaff/
+    /// DeliveryAgent, <c>TenantAccount.SuperOfficeDomain</c> for TenantOwner, or
+    /// <c>Platform:AllowedFrontendOrigins</c> for PlatformSuperAdmin only. Never trusted outright
+    /// (see AuthService.ResolveLinkBase / ResolveStaffRealmAsync).
+    /// </summary>
+    Task RequestPasswordResetAsync(string email, string? redirectBaseUrl = null, CancellationToken ct = default);
 
-    /// <summary>Shop realm, scoped to one Business's Customers by slug — same non-enumeration behavior (§9.10).</summary>
-    Task RequestStorefrontPasswordResetAsync(string businessSlug, string email, CancellationToken ct = default);
+    /// <summary>
+    /// Shop realm, scoped to one Business's Customers by slug — same non-enumeration behavior
+    /// (§9.10). <paramref name="redirectBaseUrl"/> is honored only if it matches that Business's
+    /// own <c>ShopDomain</c> (see AuthService.ResolveLinkBase).
+    /// </summary>
+    Task RequestStorefrontPasswordResetAsync(string businessSlug, string email, string? redirectBaseUrl = null, CancellationToken ct = default);
 
     /// <summary>Shared by every realm — the token itself identifies the account (§9.10).</summary>
     Task ResetPasswordAsync(string token, string newPassword, CancellationToken ct = default);

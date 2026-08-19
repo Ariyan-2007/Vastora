@@ -33,12 +33,20 @@ public record BackOfficeLoginRequest(string Email, string Password);
 
 public record StorefrontLoginRequest(string Email, string Password);
 
-public record StorefrontRegisterRequest(string FullName, string Email, string Password, string Phone);
+/// <summary><paramref name="RedirectBaseUrl"/> — the calling frontend's own origin (e.g. <c>window.location.origin</c>), for building the verify-email link. Optional; honored only if it matches this Business's own <c>ShopDomain</c> (see AuthService.ResolveLinkBase) — never trusted outright.</summary>
+public record StorefrontRegisterRequest(string FullName, string Email, string Password, string Phone, string? RedirectBaseUrl = null);
 
 public record RefreshTokenRequest(string RefreshToken);
 
-/// <summary>Always 204s regardless of whether the email matches an account — avoids user enumeration (§9.10).</summary>
-public record ForgotPasswordRequest(string Email);
+/// <summary>
+/// Always 204s regardless of whether the email matches an account — avoids user enumeration
+/// (§9.10). <paramref name="RedirectBaseUrl"/> — the calling frontend's own origin (e.g.
+/// <c>window.location.origin</c>), for building the reset-password link. Optional; honored only
+/// if it matches a known-legitimate origin for the realm the request came through (see
+/// AuthService.ResolveLinkBase) — never trusted outright, since blindly trusting it would let
+/// anyone email a real reset token to a victim's inbox pointing at an attacker's own domain.
+/// </summary>
+public record ForgotPasswordRequest(string Email, string? RedirectBaseUrl = null);
 
 /// <summary>Shared by every realm — the token itself already identifies which user/account it belongs to.</summary>
 public record ResetPasswordRequest(string Token, string NewPassword);

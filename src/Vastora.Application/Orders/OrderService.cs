@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using Vastora.Application.Businesses;
 using Vastora.Application.Common;
 using Vastora.Application.Common.Exceptions;
 using Vastora.Application.Common.Interfaces;
@@ -32,6 +33,7 @@ public class OrderService(
     INotificationService notificationService,
     IInventoryService inventoryService,
     IWebhookPublisher webhookPublisher,
+    IPlatformSettings platformSettings,
     ILogger<OrderService> logger) : IOrderService
 {
     private static readonly HashSet<OrderStatus> CancellableStatuses = [OrderStatus.PendingPayment, OrderStatus.Processing, OrderStatus.Confirmed];
@@ -872,9 +874,9 @@ public class OrderService(
 
             if (!string.IsNullOrWhiteSpace(email))
             {
-                var business = await businesses.GetByIdAsync(order.BusinessId, ct);
+                var business = BusinessAssetUrls.ResolveLogo(await businesses.GetByIdAsync(order.BusinessId, ct), platformSettings.ApiBaseUrl);
                 var (subject, plainBody, htmlBody) = buildMessage(business);
-                await notificationService.NotifyAsync(new NotificationMessage(email, subject, plainBody, htmlBody), ct);
+                await notificationService.NotifyAsync(new NotificationMessage(email, subject, plainBody, htmlBody, BusinessId: order.BusinessId), ct);
             }
         }
         catch (Exception ex)

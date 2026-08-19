@@ -1,3 +1,4 @@
+using Vastora.Application.Businesses;
 using Vastora.Application.Common.Exceptions;
 using Vastora.Application.Common.Interfaces;
 using Vastora.Application.Coupons;
@@ -34,7 +35,8 @@ public class DiscountEmailService(
     IMongoRepository<CustomerGroup> customerGroups,
     IMongoRepository<AppUser> users,
     IMongoRepository<Business> businesses,
-    INotificationService notificationService) : IDiscountEmailService
+    INotificationService notificationService,
+    IPlatformSettings platformSettings) : IDiscountEmailService
 {
     public async Task<SendDiscountEmailResult> SendAsync(
         string tenantId, string businessId, SendDiscountEmailRequest request, CancellationToken ct = default)
@@ -59,7 +61,7 @@ public class DiscountEmailService(
             throw new ConflictException("Name at least one customer or a customer group to send to.");
         }
 
-        var business = await businesses.GetByIdAsync(businessId, ct);
+        var business = BusinessAssetUrls.ResolveLogo(await businesses.GetByIdAsync(businessId, ct), platformSettings.ApiBaseUrl);
         var sent = 0;
         var skipped = 0;
 
@@ -88,7 +90,7 @@ public class DiscountEmailService(
             var (subject, plainBody, htmlBody) = EmailTemplates.DiscountCode(
                 business, user.FullName, code, label, description, expiresAt, unsubscribeUrl);
 
-            await notificationService.NotifyAsync(new NotificationMessage(user.Email, subject, plainBody, htmlBody), ct);
+            await notificationService.NotifyAsync(new NotificationMessage(user.Email, subject, plainBody, htmlBody, BusinessId: businessId), ct);
             sent++;
         }
 

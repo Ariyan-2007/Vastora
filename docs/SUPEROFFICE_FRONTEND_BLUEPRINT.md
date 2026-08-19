@@ -95,12 +95,18 @@ Every authenticated request needs `Authorization: Bearer <accessToken>`.
   whichever refresh token came back from the *last* successful call, never reuse an old one.
 - `POST /api/auth/logout` with `{ "refreshToken": "..." }` revokes it server-side.
 - **Password reset (added 2026-08-15, main blueprint §9.10):** `POST /api/auth/forgot-password`
-  `{ email }` always 204s regardless of whether the email matches an account — don't build a UI
-  that reveals which. `POST /api/auth/reset-password` `{ token, newPassword }` (shared across
-  every realm) resets it and revokes every active session for that user server-side — the user
-  will need to log in again after a reset, including on this device. There is no real email
-  delivery yet (§9.10's `INotificationService` only logs server-side) — until a provider is
-  wired in, "forgot password" isn't actually usable by a real end user through this UI alone.
+  `{ email, redirectBaseUrl? }` always 204s regardless of whether the email matches an account —
+  don't build a UI that reveals which. `POST /api/auth/reset-password` `{ token, newPassword }`
+  (shared across every realm) resets it and revokes every active session for that user
+  server-side — the user will need to log in again after a reset, including on this device.
+- **Send `redirectBaseUrl: window.location.origin`, added 2026-08-19.** Without it the emailed
+  link falls back to a single platform-wide default, which may not be this deployment's actual
+  address. Only honored if it exactly matches your own Tenant's `superOfficeDomain` — **updated
+  2026-08-19: this is no longer static backend config.** It's set per-Tenant by Platform, not by
+  this app (deliberately: if a TenantOwner is themselves locked out, they can't be the one who
+  fixes where their own reset link points). If the reset link isn't landing here, it means Platform
+  hasn't set this Tenant's `superOfficeDomain` yet — ask them to, there's nothing this app can do
+  about it itself. A non-matching value is silently ignored, not an error — safe to always send it.
 
 **Recommended storage (foundation-phase pragmatic choice):** both tokens in `localStorage`.
 This is not the most secure option (an httpOnly-cookie-based flow through a small BFF would
@@ -201,6 +207,7 @@ type TenantResponse = {
   ownerUserId: string;
   contactEmail: string;
   contactPhone: string;
+  superOfficeDomain: string | null; // added 2026-08-19 — read-only here, see note below
   createdAt: string; // ISO 8601
 };
 ```
@@ -209,6 +216,14 @@ There is currently **no PATCH endpoint for a Tenant's own profile** (name/contac
 only Platform staff can change `Status`/`Plan` (not exposed to this app). If Tenant
 self-service profile editing is needed, that's a backend gap to flag, not something to work
 around client-side.
+
+**`superOfficeDomain` is read-only through this app, deliberately (added 2026-08-19).** It's the
+value §4's `redirectBaseUrl` note above validates against, but the writer
+(`PATCH /api/platform/tenants/{tenantId}/superoffice-domain`) is Platform-only, not exposed here —
+if a TenantOwner's own account gets locked out, they need someone above them able to fix where
+their reset link points, so this deliberately isn't self-service. Show it on the Tenant profile
+read-only, and if it's `null` (unset), that's a real "your password-reset link won't work off this
+app's own address until Platform sets this" state worth surfacing, not silently ignoring.
 
 **Usage vs. plan limits (added 2026-08-15, main blueprint §9.9):**
 
@@ -257,6 +272,9 @@ never pass a `tenantId`, the backend reads it from your JWT.
 | PUT | `/api/superoffice/businesses/{businessId}` | `UpdateBusinessRequest` | `BusinessResponse` | Full profile update |
 | PATCH | `/api/superoffice/businesses/{businessId}/status` | bare string, e.g. `"Suspended"` | `BusinessResponse` | See note below |
 | PATCH | `/api/businesses/{businessId}/delivery-module` | `{ enabled: boolean }` | `BusinessResponse` | Not under `/superoffice/` — it's the shared BackOffice route (main blueprint §9.14), but a `TenantOwner`'s JWT works on it too, same as any BackOffice endpoint (§1's note above on reusing the token). Turns the DeliveryAgent workflow on/off for one Business; existing agents and in-flight assignments aren't touched, only new creation/assignment is blocked while off. |
+| GET | `/api/superoffice/businesses/{businessId}/mail-settings` | — | `BusinessMailSettingsResponse` | Added 2026-08-19, main blueprint §9.10 |
+| PUT | `/api/superoffice/businesses/{businessId}/mail-settings` | `UpdateBusinessMailSettingsRequest` | `BusinessMailSettingsResponse` | Added 2026-08-19 — see note below |
+| PATCH | `/api/superoffice/businesses/{businessId}/domains` | `UpdateBusinessDomainsRequest` | `BusinessResponse` | Added 2026-08-19, reshaped same day — sets `shopDomain` and `backOfficeDomain`; see note below |
 
 ```ts
 type BusinessResponse = {
@@ -264,7 +282,8 @@ type BusinessResponse = {
   tenantId: string;
   name: string;
   slug: string;              // public, globally unique — used in Shop URLs
-  customDomain: string | null;
+  shopDomain: string | null;       // renamed from customDomain 2026-08-19 — see domain note below
+  backOfficeDomain: string | null; // added 2026-08-19 — see domain note below
   description: string;
   logoUrl: string;
   bannerUrl: string;
@@ -317,7 +336,61 @@ Second, even a `MultiBusiness` Tenant is capped by its plan's `maxBusinesses` (�
 endpoint) — at Trial that's 1, same ceiling as a `SingleBusiness` Tenant, so don't assume
 `type: "MultiBusiness"` alone means the button is always safe to show enabled.
 
-### 6.4 Analytics (added 2026-08-15, main blueprint §9.8)
+**Mail domain (added 2026-08-19, main blueprint §9.10).** This is deliberately SuperOffice-only
+— BackOffice has no route to it at all, not even for `BusinessAdmin`. Every email addressed to
+this Business's world (customers, `BusinessAdmin`/`BusinessStaff`, `DeliveryAgent`) sends
+through here once `enabled` and `host` are set; until then it silently falls back to the
+platform's own SMTP account, so leaving this unconfigured is a safe default, not a broken one.
+
+```ts
+type BusinessMailSettingsResponse = {
+  enabled: boolean;
+  host: string;
+  port: number;
+  username: string;
+  hasPassword: boolean;    // true if a credential is on file — the password itself is never returned
+  fromAddress: string;
+  fromName: string;
+};
+
+type UpdateBusinessMailSettingsRequest = {
+  enabled: boolean;
+  host: string;
+  port: number;
+  username: string;
+  password: string | null; // omit or send null/"" to leave the stored password unchanged
+  fromAddress: string;
+  fromName: string;
+};
+
+type UpdateBusinessDomainsRequest = {
+  shopDomain: string | null;       // e.g. "shop.antivaly.com" — null/"" clears it
+  backOfficeDomain: string | null; // e.g. "staff.antivaly.com" — null/"" clears it
+};
+```
+
+**Domains (added 2026-08-19, reshaped same day — main blueprint §9.10).** `customDomain` existed
+on `BusinessResponse` since the foundation session with no writer anywhere; this PATCH was
+originally its writer, then split into two fields the same day once it became clear one field
+couldn't serve both purposes it was being asked to. Both are SuperOffice-only, same as
+mail-settings, and this is the actual dynamic-domain-management form: no config file, no
+redeploy — a TenantOwner sets these here and the change takes effect on the next request.
+
+- **`shopDomain`** — this Business's customer-facing Shop domain. Used server-side to (1) resolve
+  a relative `logoUrl`/`bannerUrl` to an absolute URL for outbound email, preferred over the
+  platform's own base URL when set, and (2) validate a Customer's `redirectBaseUrl` on the Shop's
+  own `register`/`forgot-password` calls (see the Antivaly Shop blueprint).
+- **`backOfficeDomain`** — the address this Business's own `BusinessAdmin`/`BusinessStaff`/
+  `DeliveryAgent` staff sign in at. Validates *their* `redirectBaseUrl` on `forgot-password` (see
+  the BackOffice blueprint) — deliberately a separate field from `shopDomain`, since a Business's
+  public storefront and its staff console are not usually the same address, and a customer domain
+  must never double as a valid staff-reset target.
+
+Neither is yet a routing/DNS/TLS feature — pointing an actual domain's DNS at Vastora and
+terminating TLS for it is still open infrastructure work (see main blueprint's Content/domain
+roadmap notes), so don't build a "your domain is live" UI around either field yet. Safe default:
+leave both unset for a Business testing locally — email/redirect validation then falls back to
+whatever the platform's own configured/request-derived defaults resolve to.
 
 | Method | Path | Body | Returns |
 |---|---|---|---|

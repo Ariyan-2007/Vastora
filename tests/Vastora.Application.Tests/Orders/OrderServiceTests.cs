@@ -65,7 +65,7 @@ public class OrderServiceTests
         var service = new OrderService(
             orders, carts, products, businesses, profiles, users, ledgerEntries,
             coupons, pricing, taxService, promotionService, giftCards, storeCredit,
-            notifications, inventoryService, webhooks, NullLogger<OrderService>.Instance);
+            notifications, inventoryService, webhooks, new PlatformSettingsStub(), NullLogger<OrderService>.Instance);
 
         return (service, orders, carts, products, businesses, profiles, users, ledgerEntries);
     }

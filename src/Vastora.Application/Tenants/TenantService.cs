@@ -118,6 +118,17 @@ public class TenantService(
         return Map(tenant);
     }
 
+    public async Task<TenantResponse> UpdateSuperOfficeDomainAsync(string tenantId, UpdateTenantSuperOfficeDomainRequest request, CancellationToken ct = default)
+    {
+        var tenant = await tenants.GetByIdAsync(tenantId, ct)
+            ?? throw new NotFoundException(nameof(TenantAccount), tenantId);
+
+        tenant.SuperOfficeDomain = string.IsNullOrWhiteSpace(request.SuperOfficeDomain) ? null : request.SuperOfficeDomain.Trim();
+        tenant.UpdatedAt = DateTime.UtcNow;
+        await tenants.UpdateAsync(tenant, ct);
+        return Map(tenant);
+    }
+
     public async Task<TenantUsageResponse> GetUsageAsync(string tenantId, CancellationToken ct = default)
     {
         var tenant = await tenants.GetByIdAsync(tenantId, ct)
@@ -159,5 +170,5 @@ public class TenantService(
     }
 
     private static TenantResponse Map(TenantAccount t) => new(
-        t.Id, t.Name, t.Slug, t.Type, t.Status, t.Plan, t.OwnerUserId, t.ContactEmail, t.ContactPhone, t.CreatedAt);
+        t.Id, t.Name, t.Slug, t.Type, t.Status, t.Plan, t.OwnerUserId, t.ContactEmail, t.ContactPhone, t.SuperOfficeDomain, t.CreatedAt);
 }

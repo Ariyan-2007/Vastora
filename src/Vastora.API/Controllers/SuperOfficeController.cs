@@ -50,4 +50,34 @@ public class SuperOfficeController(ICurrentUserContext currentUser, IBusinessSer
         var result = await businessService.UpdateStatusAsync(CurrentUser.TenantId, businessId, status, ct);
         return Ok(result);
     }
+
+    /// <summary>
+    /// A Business's own outbound mail identity. SuperOffice-only by design — this controller is
+    /// already gated to TenantOwner, so BackOffice (BusinessAdmin/Staff) has no path to it.
+    /// </summary>
+    [HttpGet("{businessId}/mail-settings")]
+    public async Task<ActionResult<BusinessMailSettingsResponse>> GetMailSettings(string businessId, CancellationToken ct)
+    {
+        var result = await businessService.GetMailSettingsAsync(CurrentUser.TenantId, businessId, ct);
+        return Ok(result);
+    }
+
+    [HttpPut("{businessId}/mail-settings")]
+    public async Task<ActionResult<BusinessMailSettingsResponse>> UpdateMailSettings(string businessId, UpdateBusinessMailSettingsRequest request, CancellationToken ct)
+    {
+        var result = await businessService.UpdateMailSettingsAsync(CurrentUser.TenantId, businessId, request, ct);
+        return Ok(result);
+    }
+
+    /// <summary>
+    /// This Business's Shop and BackOffice domains — a real production domain each, or a dev
+    /// tunnel while testing. Set from a form here in SuperOffice; no config edit or redeploy
+    /// needed. Also SuperOffice-only, same reasoning as mail-settings.
+    /// </summary>
+    [HttpPatch("{businessId}/domains")]
+    public async Task<ActionResult<BusinessResponse>> UpdateDomains(string businessId, UpdateBusinessDomainsRequest request, CancellationToken ct)
+    {
+        var result = await businessService.UpdateDomainsAsync(CurrentUser.TenantId, businessId, request, ct);
+        return Ok(result);
+    }
 }

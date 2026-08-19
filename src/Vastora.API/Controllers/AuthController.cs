@@ -48,7 +48,7 @@ public class AuthController(
     [AllowAnonymous]
     public async Task<IActionResult> ForgotPassword(ForgotPasswordRequest request, CancellationToken ct)
     {
-        await authService.RequestPasswordResetAsync(request.Email, ct);
+        await authService.RequestPasswordResetAsync(request.Email, request.RedirectBaseUrl, ct);
         return NoContent();
     }
 

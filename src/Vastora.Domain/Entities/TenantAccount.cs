@@ -25,4 +25,13 @@ public class TenantAccount : BaseEntity
     public string ContactEmail { get; set; } = string.Empty;
 
     public string ContactPhone { get; set; } = string.Empty;
+
+    /// <summary>
+    /// This Tenant's SuperOffice domain — set by Platform Admin, not the TenantOwner themselves
+    /// (if a TenantOwner is locked out of their own account, they can't be the one who fixes the
+    /// address their reset link points at). Validates a TenantOwner's self-supplied redirectBaseUrl
+    /// on forgot-password, same mechanism as Business.ShopDomain/BackOfficeDomain one level down —
+    /// see AuthService.ResolveLinkBase.
+    /// </summary>
+    public string? SuperOfficeDomain { get; set; }
 }
