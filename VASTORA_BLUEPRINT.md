@@ -767,6 +767,82 @@ the rest were scoped down on purpose.
       email exists (§9.24/§9.33 have the data but never call `INotificationService`), and
       `AssignDeliveryAgentAsync`/`UpdatePaymentStatusAsync`/return `MarkReceivedAsync`/`CancelAsync`
       still send nothing on their own transitions.
+- [x] **Redesigned templates + per-Business mail domain + the broken-logo fix, added 2026-08-19.**
+      `EmailTemplates.cs`'s whole HTML layout was rebuilt on a new design system (warm cream
+      page, rounded white card, `Figtree`/`Caprasimo` type, tan info chips, a 4-step
+      Processing→Confirmed→Out-for-delivery/Ready-for-pickup→Delivered/Picked-up tracker on
+      `OrderShipped`/`OrderStatusUpdate`) — every template's public signature is unchanged, only
+      the HTML body construction. New `Business.MailSettings` (`BusinessMailSettings`: Host/
+      Port/Username/Password/FromAddress/FromName/Enabled) is a Business's own SMTP identity,
+      editable only via `PUT /api/superoffice/businesses/{businessId}/mail-settings` —
+      `SuperOfficeController` is already `TenantOwner`-only, so BackOffice has no path to it, per
+      the explicit ask that only the owning Tenant's SuperOffice sets a Business's mail domain,
+      never BackOffice. `NotificationMessage` gained an optional `BusinessId`; `SmtpNotificationService`
+      resolves that Business's own SMTP connection when `MailSettings.Enabled` and a `Host` is
+      set, otherwise falls back to the platform's own `SmtpSettings` — the same account used for
+      mail with no Business at all (a TenantOwner/PlatformSuperAdmin password reset). Every
+      `NotifyAsync` call site (`AuthService`, `OrderService`, `ReturnService`,
+      `DiscountEmailService`, `LifecycleNotificationService`) now passes the triggering
+      Business's id through. Separately, fixed the actual "logo breaks in the email" bug — see
+      the next bullet for the final shape; this bullet's own first attempt (baking an absolute
+      URL into `LogoUrl` at upload time) was reverted the same day. (The `EmailTemplates` doc
+      comment claiming `LogoUrl` was expected to be an SVG was also stale — `ImageUploadPolicy`
+      has never allowed SVG, only jpeg/png/webp/gif.)
+- [x] **The broken-logo fix, corrected same day (2026-08-19).** The first attempt made
+      `LocalFileStorageService.SaveAsync` return an absolute URL (via `IPlatformSettings.
+      PublicBaseUrl`) so it could be stored directly on `Business.LogoUrl`. Reverted: baking
+      today's host into a stored value freezes it there — wrong the moment that host changes (a
+      dev tunnel restarting, a domain migration), silently, since nothing re-writes old rows.
+      `LocalFileStorageService` is back to returning `/uploads/{businessId}/{file}`, exactly as
+      before this whole feature — every other consumer (a BackOffice/Shop frontend rendering an
+      `<img>`) already resolves a relative URL against its own known API base and was never
+      broken by this. The one consumer genuinely without a base of its own — outbound email —
+      now resolves relative→absolute itself, at send time: new `BusinessAssetUrls.ResolveLogo`
+      (`Vastora.Application/Businesses/`), called at all nine `NotifyAsync` build sites right
+      after fetching `business`, prefers `Business.CustomDomain` (see below) and falls back to
+      **`IPlatformSettings.ApiBaseUrl`** — a second, new setting, deliberately distinct from
+      `PublicBaseUrl`. Both went through a wrong intermediate shape the same day before landing
+      here (§10 has the full story); the shape that stuck:
+      - **`PublicBaseUrl`** — the *frontend's* address (Shop/BackOffice/SuperOffice, whichever
+        renders the page). Builds every customer/staff-facing page link: verify-email,
+        password-reset, unsubscribe. Always the configured value (`Platform:PublicBaseUrl`) —
+        there is no way to derive a *different app's* address from an inbound API request, so
+        this one was never a candidate for request-derivation in the first place.
+      - **`ApiBaseUrl`** — this API's *own* address. The only thing it's for: resolving a
+        Business's relative `LogoUrl` to absolute for email, since `/uploads/...` really is
+        served by this API. Prefers the live request's own scheme+host (honoring
+        `X-Forwarded-Proto`, since a tunnel/proxy terminates TLS itself and forwards to Kestrel
+        over plain HTTP) whenever a request is in flight — zero config, self-correcting across a
+        dev tunnel, staging, and production. Falls back to configured `Platform:ApiBaseUrl` only
+        for the one code path with no request to read: `LifecycleNotificationWorker`'s
+        background sweep. Verified live: ran the API behind an ngrok tunnel with no
+        `Platform:ApiBaseUrl` override at all; Kestrel's own request log showed
+        `Host: <the-ngrok-domain>` on the inbound request, confirming the value `ApiBaseUrl`
+        reads.
+
+      New `Business.CustomDomain` writer — was a field nothing read or wrote since the
+      foundation session (§7); still not a routing/DNS/TLS feature (that's still open
+      infrastructure work), just an override `BusinessAssetUrls` prefers over `ApiBaseUrl` when
+      set. SuperOffice-only: `PATCH /api/superoffice/businesses/{businessId}/domain`
+      (`UpdateBusinessDomainRequest`). 7 new unit tests for `BusinessAssetUrls` (146 → 153).
+- [x] **Request-supplied redirect target for verify-email/reset-password links, added
+      2026-08-19.** `PublicBaseUrl` is one fixed address — wrong the moment more than one
+      frontend shares this backend (a Business's own Shop domain, a staging vs. production
+      BackOffice, ...). `ForgotPasswordRequest`/`StorefrontRegisterRequest` gained an optional
+      `RedirectBaseUrl` — a caller sends its own origin (`window.location.origin`) and
+      `AuthService.ResolveLinkBase` uses it *if and only if* it exactly matches a
+      known-legitimate origin for the request's realm: that Business's own `CustomDomain` when
+      one is known (Shop realm), or the new `Platform:AllowedFrontendOrigins` allowlist
+      otherwise (BackOffice/SuperOffice/Platform realm, same shape and reasoning as
+      `Cors:AllowedOrigins`). Deliberately never trusted outright — an unvalidated
+      client-supplied redirect on a password-reset email is a real account-takeover vector (an
+      attacker requests a reset for the victim's email with their own domain as the target; the
+      victim's real reset token gets emailed pointing at the attacker's phishing page, which
+      relays it back to this API to actually change the password — the email-delivered analogue
+      of an open redirect). A non-matching or absent value falls back to the configured
+      `PublicBaseUrl`, silently, no error — every existing caller keeps working unchanged. 5 new
+      unit tests exercising both the Shop/`CustomDomain` and BackOffice/`AllowedFrontendOrigins`
+      paths, including the poisoning case explicitly (146 → 153 → 158).
 
 ### 9.11 Observability & hardening — done (2026-08-15)
 - [x] **Structured logging.** `Serilog.AspNetCore`, console sink only (no external aggregator
@@ -1136,15 +1212,17 @@ was out of scope. The full list of what a real seller expects and cannot express
 
 ### 9.30 Storefront content management
 
-**done (2026-08-16).** One polymorphic `ContentBlock` collection covering banners, static pages (About/Contact/**Terms**/**Privacy**), nav menu items and articles — with slugs, scheduling, publish state and SEO fields. Public read endpoints per type plus a nested menu builder. **`Business.CustomDomain` is still a field nothing reads** — domain verification, TLS provisioning and request routing are infrastructure work, not API work, and remain open.
+**done (2026-08-16).** One polymorphic `ContentBlock` collection covering banners, static pages (About/Contact/**Terms**/**Privacy**), nav menu items and articles — with slugs, scheduling, publish state and SEO fields. Public read endpoints per type plus a nested menu builder. **`Business.CustomDomain`, split 2026-08-19 into `ShopDomain`/`BackOfficeDomain` (§9.10), is now read for two things — outbound email asset URLs and redirect-link validation — but domain verification, TLS provisioning and request routing remain open infrastructure work.**
 - [x] A Business can set a logo, banner, theme colour and description — and that is the entire
       content model. No homepage layout, no promotional banners/slides with schedules, no
       static pages (About / Contact / Shipping Policy / **Terms** / **Privacy Policy** — the
       last two are legally required in most markets and there is nowhere to put them), no
       navigation menu builder, no blog/content marketing.
-- [ ] `Business.CustomDomain` exists on the entity but nothing reads it — no domain
-      verification, no TLS provisioning, no request-routing path. Custom domains are usually a
-      paid-tier upsell; the field is currently a promise the platform does not keep.
+- [ ] `Business.ShopDomain`/`BackOfficeDomain` (SuperOffice-settable, §9.10) and
+      `TenantAccount.SuperOfficeDomain` (Platform-settable) are now read for email/redirect
+      purposes, but still no domain verification, no TLS provisioning, no request-routing path —
+      setting one of these fields doesn't make Vastora actually answer requests on that domain.
+      Custom domains as a real paid-tier feature (DNS + TLS + routing) remains unbuilt.
 
 ### 9.31 COGS, gross margin & accounting correctness
 
@@ -1745,6 +1823,170 @@ customer-facing return endpoint, which is the one place a customer actually supp
 ## 10. Progress Log
 
 Newest entry first. Keep entries short — what happened and why, not a diff.
+
+### 2026-08-19 — Fourth pass, same day: every redirect trust anchor is now API-settable, not config (§9.10)
+Follow-up pushback on the previous entry: `Platform:AllowedFrontendOrigins` was still `.env`
+config — fine for local dev, wrong for the actual product, since the whole point was "SuperOffice
+sets this dynamically, no redeploy." Replaced it with real CRUD wherever a Tenant/Business is the
+natural owner of the value, and kept static config only where nothing else could plausibly own it.
+
+**Business gained two domains, not one.** `CustomDomain` conflated two different audiences — a
+Business's customer-facing Shop and its own staff BackOffice rarely live at the same address, and
+letting one field validate `redirectBaseUrl` for both would let a Business's public Shop domain
+double as a valid staff-password-reset target, which is wrong. Split into `Business.ShopDomain`
+(customer/Shop realm — also the asset-URL base for outbound email, same role `CustomDomain` had)
+and `Business.BackOfficeDomain` (BusinessAdmin/BusinessStaff/DeliveryAgent realm). Both set from
+one form, `PATCH /api/superoffice/businesses/{id}/domains` (`UpdateBusinessDomainsRequest`),
+SuperOffice-only, same as mail-settings.
+
+**TenantOwner (SuperOffice) gained a domain too, set one level up.** A TenantOwner's own
+password-reset link needs somewhere to validate `redirectBaseUrl` against, but it can't be
+TenantOwner's own self-service field — if their account is the one locked out, they're not the
+one positioned to fix where their own reset link points. New `TenantAccount.SuperOfficeDomain`,
+writable only via `PATCH /api/platform/tenants/{id}/superoffice-domain`, Platform-only.
+
+**`AuthService.ResolveStaffRealmAsync` (new)** replaces the old "business is null → check
+`AllowedFrontendOrigins`" branch with a real per-role lookup: `BusinessAdmin`/`BusinessStaff`/
+`DeliveryAgent` → their own Business's `BackOfficeDomain`; `TenantOwner` → their Tenant's
+`SuperOfficeDomain`; `PlatformSuperAdmin` → still `Platform:AllowedFrontendOrigins`, the one role
+left on static config, because there's no Business or Tenant above Platform for anything else to
+own that value. `ResolveLinkBase` itself is simpler now — it just takes whichever allowed-origins
+list the caller already resolved, rather than inferring one from a `Business?`.
+
+4 new `AuthServiceTests` cover the TenantOwner and BusinessAdmin realms (match/no-match each), plus
+one asserting a Business's `ShopDomain` does *not* validate its own staff's `redirectBaseUrl` —
+162 total, all passing; build clean under `-warnaserror`. Updated all three frontend blueprints
+plus this one for the renamed/added fields and the new Platform endpoint.
+
+### 2026-08-19 — Third pass, same day: let the frontend supply its own redirect target (§9.10)
+Reasonable pushback on the previous entry's fix: "why does the base URL come from a static
+config value at all — why can't the browser just send its own address along with the
+forgot-password request, so several frontends can share one backend with no problem?" Right
+instinct, and actually the standard pattern for this — implemented it, but not by trusting the
+client's value outright.
+
+**The trap, and why it matters:** if a `redirectBaseUrl` sent on `forgot-password` were used
+unvalidated, an attacker who only knows a victim's email could request a reset with their own
+domain as the target. The victim's *real* reset token — genuinely issued by this backend — gets
+emailed to the victim's real inbox, pointing at the attacker's phishing page instead of the real
+frontend. The victim clicks a link that looks legitimate (correct sender, correct subject), the
+phishing page relays the token straight back to the real `reset-password` endpoint, and the
+attacker sets a new password. This is the email-delivered version of a classic open-redirect
+vulnerability ("password-reset poisoning") — a known, documented attack class, not a theoretical
+concern invented for this session.
+
+**The fix:** `ForgotPasswordRequest`/`StorefrontRegisterRequest` gained an optional
+`RedirectBaseUrl`. `AuthService.ResolveLinkBase` (new) honors it only if it exactly matches a
+known-legitimate origin for the request's realm — reusing `Business.CustomDomain` (already built
+this same day for the logo-resolution problem, and already SuperOffice-settable) for the Shop
+realm, and a new `Platform:AllowedFrontendOrigins` allowlist — same shape as the existing
+`Cors:AllowedOrigins`, deliberately — for the BackOffice/SuperOffice/Platform realm, which has no
+Business to check against. Anything that doesn't match silently falls back to the configured
+`PublicBaseUrl`; no error, no behavior change for a caller that doesn't send it at all. 5 new
+`AuthServiceTests` cover both matched and unmatched cases for each realm, including the exact
+poisoning scenario (asserting the attacker's domain never appears in the sent email).
+
+Also set `Platform:AllowedFrontendOrigins`/`PublicBaseUrl` in the real `.env` for this
+environment's actual BackOffice address (`http://localhost:5173`), so the fix is live here now,
+not just correct in the abstract. Updated all three frontend blueprints (§10) for the new
+`redirectBaseUrl` field and when each realm's trust anchor applies.
+
+### 2026-08-19 — Second correction, same day: split PublicBaseUrl into two settings (§9.10)
+The previous entry's fix made `PublicBaseUrl` derive from whatever request was in flight — right
+for resolving a Business's logo (served by this API), wrong for building a `reset-password`
+page link. Caught live: requesting a password reset through the ngrok-tunneled API produced
+`https://<the-tunnel>.ngrok-free.app/reset-password?token=...` — a link to the *backend's own*
+tunnel address, with no `/reset-password` route to serve it, when it needed to point at the
+separate BackOffice frontend (`localhost:5173`) that actually renders that page. Root cause:
+one property, `PublicBaseUrl`, was carrying two genuinely different addresses — "where the
+frontend that renders this link lives" (verify-email, reset-password, unsubscribe all need
+this) and "where this API itself is reachable" (only the logo-resolution case needs this) — and
+making it request-derived served only the second meaning, silently breaking the first.
+
+Split it: `PublicBaseUrl` reverted to purely `Platform:PublicBaseUrl`, no request access at all
+— there's no way to derive a *different app's* address from an inbound API request in the first
+place, so it was never a real candidate for the request-derivation idea to begin with. New
+`ApiBaseUrl` carries the request-derivation logic instead, used only by `BusinessAssetUrls`.
+`Platform:ApiBaseUrl` added as its background-job fallback (defaults to `http://localhost:5276`,
+matching the actual dev launch profile port — the old `PublicBaseUrl` default of `:5000` never
+matched it). Real `.env` had no `Platform:PublicBaseUrl` set at all — added
+`http://localhost:5173`, the actual BackOffice frontend's address in this environment, so the
+fix is correct here and now, not just architecturally. `PlatformSettingsStub` (test double) and
+both frontend/main blueprint docs updated for the two-setting shape.
+
+### 2026-08-19 — Corrected the same-day logo fix: relative storage, request-derived base URL, SuperOffice-set domain (§9.10)
+Same-day follow-up, pushed back on directly: "why does an absolute URL get *saved*, and why is
+the fallback a hard-coded `localhost:5000` instead of just reading it off the request?" Both
+fair, and the first version of the fix (see the entry below) got the storage half wrong — it
+answers the header/CORS question that led here first, then closes with the fix.
+
+Went looking for why a real-inbox test still showed the broken logo (background) and found the
+frontend was hitting the dev API through an ngrok tunnel and getting a CORS error in the
+browser. Traced it to ngrok's own free-tier browser-warning interstitial, not Vastora's CORS
+policy (confirmed wide open, `Cors:AllowedOrigins` unset) — ngrok detects a real browser
+User-Agent and serves its own HTML page instead of proxying through, and that page carries no
+`Access-Control-Allow-Origin` header at all, which is what the browser was actually reporting.
+Fix is one header (`ngrok-skip-browser-warning: true`) on every request from the separate
+BackOffice frontend project — not a Vastora change.
+
+Then the actual ask: revert `LocalFileStorageService` to storing `/uploads/{businessId}/{file}`
+(host-relative) again — baking an absolute URL in at upload time freezes it to whatever host was
+current *then*, wrong the instant that host changes, silently, since nothing re-writes old rows.
+Reverted. Moved the resolve-to-absolute step to send time instead, in one new place:
+`BusinessAssetUrls.ResolveLogo` (`Vastora.Application/Businesses/`), called right after fetching
+`business` at all nine `NotifyAsync` build sites across `AuthService`, `OrderService`,
+`ReturnService`, `DiscountEmailService`, `LifecycleNotificationService` (three of those five
+didn't have `IPlatformSettings` injected yet; added it).
+
+Second half of the ask: stop hard-coding `Platform:PublicBaseUrl` to `http://localhost:5000` and
+read it off the request instead. `PlatformSettings` now takes `IHttpContextAccessor` (added
+`FrameworkReference Include="Microsoft.AspNetCore.App"` to the Infrastructure project so a plain
+class library can see `HttpContext` — and removed the now-redundant explicit `PackageReference`s
+that reference flagged as prunable, `NU1510`, since CI builds with `-warnaserror` and would have
+failed on the new warnings) and prefers the live request's scheme+host — honoring
+`X-Forwarded-Proto`, since a tunnel/proxy terminates TLS and forwards to Kestrel over plain HTTP
+— whenever a request is in flight. Falls back to the configured value only for
+`LifecycleNotificationWorker`'s background sweep, which has no request to read. Verified live:
+ran the API behind a fresh ngrok tunnel with no `Platform:PublicBaseUrl` override set at all,
+hit `POST /auth/forgot-password` through the tunnel's public URL, and Kestrel's own request log
+showed `Host: <the-ngrok-domain>` — proof the value resolves correctly with zero manual config,
+in a dev tunnel exactly as it will in production.
+
+Third part of the ask, offered as a fallback in case host-derivation was "too complicated": let
+SuperOffice save which domain a Business's own assets/storefront actually live at. Turned out
+`Business.CustomDomain` already existed for exactly this and had been sitting unused since the
+foundation session — no reader, no writer anywhere. Gave it a writer:
+`PATCH /api/superoffice/businesses/{businessId}/domain`, SuperOffice-only. `BusinessAssetUrls`
+prefers it over the platform's own base when set, so a Business's mail keeps resolving off its
+own address even if the platform's happens to be something else. Not a DNS/TLS/routing feature
+yet — still open infrastructure work, this is just the resolution-preference input.
+
+7 new unit tests for `BusinessAssetUrls` (146 → 153); full solution build clean under
+`-warnaserror` (matches CI); updated SuperOffice and BackOffice frontend blueprints (§10) for
+the new `domain` endpoint and to correct last entry's now-wrong "always absolute" claim about
+`logoUrl`/`bannerUrl`.
+
+### 2026-08-19 — Mail template redesign, per-Business mail domain, and the broken-logo fix (§9.10)
+Three-part ask. **(1)** Adopted a supplied HTML email design (cream background, rounded white
+card, `Figtree`/`Caprasimo` type, tan info chips, item rows, a 4-step delivery/pickup tracker)
+across every template in `EmailTemplates.cs` — rebuilt the shared layout and every
+per-template body, kept every public method signature identical so no caller
+(`AuthService`/`OrderService`/`ReturnService`/`DiscountEmailService`/
+`LifecycleNotificationService`) changed. **(2)** Business-owned mail domains: SuperOffice
+(`TenantOwner`, never BackOffice) can now set a Business's own SMTP identity —
+`Business.MailSettings`, `PUT/GET /api/superoffice/businesses/{businessId}/mail-settings`.
+`SmtpNotificationService` uses it when configured, falling back to the platform's own SMTP
+account otherwise — the same account that already, correctly, handles mail with no Business
+attached (a TenantOwner/PlatformSuperAdmin's own password reset already passed `business: null`
+before this session; that fallback boundary is what "platform sends to SuperAdmin, each
+Business's own domain sends to its customers/staff" is built on). **(3)** Fixed the actual
+logo-in-email bug: `LocalFileStorageService` was returning `/uploads/{id}/{file}` — a
+host-relative path with nothing for an email client to resolve it against, so a Business's
+logo was broken in every email, not flaky. Now returns an absolute URL via
+`IPlatformSettings.PublicBaseUrl`. Full solution build and all 146 existing unit tests pass
+unchanged; rendered all 8 templates (including the no-Business platform-fallback case) with
+real sample data to check the redesign visually before finishing. See §9.10 for the full
+breakdown.
 
 ### 2026-08-18 — Exchange, the unimplemented half of Refund/Exchange (§9.49)
 Asked whether Refund/Exchange was fully implemented. Refund was; `ReturnResolution.Exchange` was

@@ -29,7 +29,7 @@ public class ShopAuthController(ICurrentUserContext currentUser, IAuthService au
     [HttpPost("forgot-password")]
     public async Task<IActionResult> ForgotPassword(string businessSlug, ForgotPasswordRequest request, CancellationToken ct)
     {
-        await authService.RequestStorefrontPasswordResetAsync(businessSlug, request.Email, ct);
+        await authService.RequestStorefrontPasswordResetAsync(businessSlug, request.Email, request.RedirectBaseUrl, ct);
         return NoContent();
     }
 

@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using Vastora.Application.Businesses;
 using Vastora.Application.Common;
 using Vastora.Application.Common.Interfaces;
 using Vastora.Application.Webhooks;
@@ -73,12 +74,12 @@ public class LifecycleNotificationService(
             }
 
             var itemNames = cart.Items.Take(3).Select(i => i.ProductName).ToList();
-            var business = await businesses.GetByIdAsync(cart.BusinessId, ct);
+            var business = BusinessAssetUrls.ResolveLogo(await businesses.GetByIdAsync(cart.BusinessId, ct), settings.ApiBaseUrl);
             var unsubscribeUrl = UnsubscribeUrl(recipient.UnsubscribeToken);
             var (subject, plainBody, htmlBody) = EmailTemplates.AbandonedCart(
                 business, recipient.Name, itemNames, cart.Items.Sum(i => i.Quantity), null, unsubscribeUrl);
 
-            if (await TrySendAsync(recipient.Email, subject, plainBody, htmlBody, ct))
+            if (await TrySendAsync(recipient.Email, subject, plainBody, htmlBody, cart.BusinessId, ct))
             {
                 sent++;
             }
@@ -110,10 +111,10 @@ public class LifecycleNotificationService(
                 continue;
             }
 
-            var business = await businesses.GetByIdAsync(product.BusinessId, ct);
+            var business = BusinessAssetUrls.ResolveLogo(await businesses.GetByIdAsync(product.BusinessId, ct), settings.ApiBaseUrl);
             var (subject, plainBody, htmlBody) = EmailTemplates.BackInStock(business, product.Name, null, UnsubscribeUrl(user.UnsubscribeToken));
 
-            if (await TrySendAsync(user.Email, subject, plainBody, htmlBody, ct))
+            if (await TrySendAsync(user.Email, subject, plainBody, htmlBody, product.BusinessId, ct))
             {
                 sent++;
             }
@@ -136,7 +137,7 @@ public class LifecycleNotificationService(
 
         foreach (var group in tracked.Where(p => p.StockQuantity <= p.ReorderThreshold!.Value).GroupBy(p => p.BusinessId))
         {
-            var business = await businesses.GetByIdAsync(group.Key, ct);
+            var business = BusinessAssetUrls.ResolveLogo(await businesses.GetByIdAsync(group.Key, ct), settings.ApiBaseUrl);
             if (business is null || string.IsNullOrWhiteSpace(business.ContactEmail))
             {
                 continue;
@@ -145,7 +146,7 @@ public class LifecycleNotificationService(
             var items = group.Select(p => (p.Name, p.Sku, p.StockQuantity, p.ReorderThreshold)).ToList();
             var (subject, plainBody, htmlBody) = EmailTemplates.LowStockMerchant(business, items);
 
-            if (await TrySendAsync(business.ContactEmail, subject, plainBody, htmlBody, ct))
+            if (await TrySendAsync(business.ContactEmail, subject, plainBody, htmlBody, business.Id, ct))
             {
                 sent++;
             }
@@ -205,10 +206,10 @@ public class LifecycleNotificationService(
                 continue;
             }
 
-            var business = await businesses.GetByIdAsync(order.BusinessId, ct);
+            var business = BusinessAssetUrls.ResolveLogo(await businesses.GetByIdAsync(order.BusinessId, ct), settings.ApiBaseUrl);
             var (subject, plainBody, htmlBody) = EmailTemplates.ReviewRequest(business, user.FullName, unreviewed, UnsubscribeUrl(user.UnsubscribeToken));
 
-            if (await TrySendAsync(user.Email, subject, plainBody, htmlBody, ct))
+            if (await TrySendAsync(user.Email, subject, plainBody, htmlBody, order.BusinessId, ct))
             {
                 sent++;
             }
@@ -240,11 +241,11 @@ public class LifecycleNotificationService(
     private string UnsubscribeUrl(string? unsubscribeToken) =>
         string.IsNullOrEmpty(unsubscribeToken) ? string.Empty : $"{settings.PublicBaseUrl.TrimEnd('/')}/unsubscribe/{unsubscribeToken}";
 
-    private async Task<bool> TrySendAsync(string email, string subject, string plainBody, string htmlBody, CancellationToken ct)
+    private async Task<bool> TrySendAsync(string email, string subject, string plainBody, string htmlBody, string? businessId, CancellationToken ct)
     {
         try
         {
-            await notificationService.NotifyAsync(new NotificationMessage(email, subject, plainBody, htmlBody), ct);
+            await notificationService.NotifyAsync(new NotificationMessage(email, subject, plainBody, htmlBody, BusinessId: businessId), ct);
             return true;
         }
         catch (Exception ex)

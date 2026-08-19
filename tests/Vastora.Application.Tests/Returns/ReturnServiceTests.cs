@@ -38,7 +38,8 @@ public class ReturnServiceTests
             new GiftCardService(new FakeMongoRepository<GiftCard>(), businesses),
             new TaxService(),
             new Mock<INotificationService>().Object,
-            new Mock<IWebhookPublisher>().Object);
+            new Mock<IWebhookPublisher>().Object,
+            new PlatformSettingsStub());
 
         return (service, returns, orders, products, businesses, ledger, credit);
     }

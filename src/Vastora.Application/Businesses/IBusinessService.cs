@@ -29,4 +29,12 @@ public interface IBusinessService
 
     /// <summary>Toggles whether this Business uses the DeliveryAgent workflow — see Business.DeliveryModuleEnabled.</summary>
     Task<BusinessResponse> UpdateDeliveryModuleAsync(string tenantId, string businessId, bool enabled, CancellationToken ct = default);
+
+    /// <summary>SuperOffice only — a Business's own outbound mail identity. Never exposed through the regular BackOffice profile endpoints.</summary>
+    Task<BusinessMailSettingsResponse> GetMailSettingsAsync(string tenantId, string businessId, CancellationToken ct = default);
+
+    Task<BusinessMailSettingsResponse> UpdateMailSettingsAsync(string tenantId, string businessId, UpdateBusinessMailSettingsRequest request, CancellationToken ct = default);
+
+    /// <summary>SuperOffice only — sets Business.ShopDomain/BackOfficeDomain, dynamically (§9.10 domain management).</summary>
+    Task<BusinessResponse> UpdateDomainsAsync(string tenantId, string businessId, UpdateBusinessDomainsRequest request, CancellationToken ct = default);
 }

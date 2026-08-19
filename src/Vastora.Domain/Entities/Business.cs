@@ -16,7 +16,21 @@ public class Business : BaseEntity, ITenantScoped
 
     public string Slug { get; set; } = string.Empty;
 
-    public string? CustomDomain { get; set; }
+    /// <summary>
+    /// This Business's customer-facing Shop domain — set by the Tenant's SuperOffice, dynamically,
+    /// from a form (no config edit/redeploy needed). Used both to resolve a relative LogoUrl/BannerUrl
+    /// to an absolute one in outbound email (see BusinessAssetUrls) and to validate a Customer's
+    /// self-supplied redirectBaseUrl on register/forgot-password (see AuthService.ResolveLinkBase).
+    /// </summary>
+    public string? ShopDomain { get; set; }
+
+    /// <summary>
+    /// This Business's own BackOffice domain — the address its BusinessAdmin/BusinessStaff/
+    /// DeliveryAgent staff sign in at. Set by the Tenant's SuperOffice, same as ShopDomain, so a
+    /// staff member's password-reset link resolves to the right frontend even when several
+    /// Businesses (or environments) share one backend.
+    /// </summary>
+    public string? BackOfficeDomain { get; set; }
 
     public string Description { get; set; } = string.Empty;
 
@@ -69,6 +83,39 @@ public class Business : BaseEntity, ITenantScoped
 
     /// <summary>§9.27. Some sellers require accounts; this makes that a per-Business choice rather than a platform rule.</summary>
     public bool GuestCheckoutEnabled { get; set; } = true;
+
+    /// <summary>
+    /// This Business's own outbound mail identity — set by the Tenant's SuperOffice, never by
+    /// BackOffice. Every email addressed to this Business's world (customers, BusinessAdmin/Staff,
+    /// DeliveryAgent) sends through here when <see cref="MailSettings.Enabled"/> and configured;
+    /// otherwise it falls back to the platform's own SMTP account, the same one used for
+    /// Platform→TenantOwner mail (password resets, subscription notices).
+    /// </summary>
+    public BusinessMailSettings MailSettings { get; set; } = new();
+}
+
+/// <summary>
+/// A Business's own SMTP sender identity, set by the owning Tenant's SuperOffice
+/// (<c>PUT /api/superoffice/businesses/{businessId}/mail-settings</c>). Stored plaintext, same as
+/// the platform's own `Smtp:*` config — no secret store exists yet for either.
+/// </summary>
+public class BusinessMailSettings
+{
+    /// <summary>False (the default) means "use the platform's SMTP account" even if the fields below are filled in.</summary>
+    public bool Enabled { get; set; }
+
+    public string Host { get; set; } = string.Empty;
+
+    public int Port { get; set; } = 587;
+
+    public string Username { get; set; } = string.Empty;
+
+    public string Password { get; set; } = string.Empty;
+
+    /// <summary>The address customers/staff see as the sender — typically on this Business's own domain.</summary>
+    public string FromAddress { get; set; } = string.Empty;
+
+    public string FromName { get; set; } = string.Empty;
 }
 
 /// <summary>§9.19. Deliberately a single rate plus named overrides, not a jurisdiction engine.</summary>

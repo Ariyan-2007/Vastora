@@ -162,6 +162,45 @@ public class BusinessService(
         return Map(business);
     }
 
+    public async Task<BusinessMailSettingsResponse> GetMailSettingsAsync(string tenantId, string businessId, CancellationToken ct = default)
+    {
+        var business = await GetScopedAsync(tenantId, businessId, ct);
+        return MapMailSettings(business.MailSettings);
+    }
+
+    public async Task<BusinessMailSettingsResponse> UpdateMailSettingsAsync(string tenantId, string businessId, UpdateBusinessMailSettingsRequest request, CancellationToken ct = default)
+    {
+        var business = await GetScopedAsync(tenantId, businessId, ct);
+
+        business.MailSettings.Enabled = request.Enabled;
+        business.MailSettings.Host = request.Host;
+        business.MailSettings.Port = request.Port;
+        business.MailSettings.Username = request.Username;
+        business.MailSettings.FromAddress = request.FromAddress;
+        business.MailSettings.FromName = request.FromName;
+        if (!string.IsNullOrEmpty(request.Password))
+        {
+            business.MailSettings.Password = request.Password;
+        }
+
+        business.UpdatedAt = DateTime.UtcNow;
+        await businesses.UpdateAsync(business, ct);
+        return MapMailSettings(business.MailSettings);
+    }
+
+    public async Task<BusinessResponse> UpdateDomainsAsync(string tenantId, string businessId, UpdateBusinessDomainsRequest request, CancellationToken ct = default)
+    {
+        var business = await GetScopedAsync(tenantId, businessId, ct);
+        business.ShopDomain = string.IsNullOrWhiteSpace(request.ShopDomain) ? null : request.ShopDomain.Trim();
+        business.BackOfficeDomain = string.IsNullOrWhiteSpace(request.BackOfficeDomain) ? null : request.BackOfficeDomain.Trim();
+        business.UpdatedAt = DateTime.UtcNow;
+        await businesses.UpdateAsync(business, ct);
+        return Map(business);
+    }
+
+    private static BusinessMailSettingsResponse MapMailSettings(BusinessMailSettings s) => new(
+        s.Enabled, s.Host, s.Port, s.Username, !string.IsNullOrEmpty(s.Password), s.FromAddress, s.FromName);
+
     private async Task<Business> GetScopedAsync(string tenantId, string businessId, CancellationToken ct)
     {
         var business = await businesses.GetByIdAsync(businessId, ct);
@@ -191,7 +230,7 @@ public class BusinessService(
     }
 
     private static BusinessResponse Map(Business b) => new(
-        b.Id, b.TenantId, b.Name, b.Slug, b.CustomDomain, b.Description, b.LogoUrl, b.BannerUrl,
+        b.Id, b.TenantId, b.Name, b.Slug, b.ShopDomain, b.BackOfficeDomain, b.Description, b.LogoUrl, b.BannerUrl,
         b.ThemeColor, b.Currency, b.ContactEmail, b.ContactPhone, b.Status, b.DeliveryModuleEnabled,
         b.DefaultDeliveryFee, b.CreatedAt,
         b.Tax, b.ReturnWindowDays, b.ReviewsEnabled, b.GuestCheckoutEnabled);

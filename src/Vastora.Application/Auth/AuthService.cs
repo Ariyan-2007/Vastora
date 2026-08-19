@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using Vastora.Application.Businesses;
 using Vastora.Application.Common;
 using Vastora.Application.Common.Exceptions;
 using Vastora.Application.Common.Interfaces;
@@ -11,6 +12,7 @@ namespace Vastora.Application.Auth;
 public class AuthService(
     IMongoRepository<AppUser> users,
     IMongoRepository<Business> businesses,
+    IMongoRepository<TenantAccount> tenants,
     IMongoRepository<RefreshToken> refreshTokens,
     IMongoRepository<PasswordResetToken> passwordResetTokens,
     IMongoRepository<EmailVerificationToken> emailVerificationTokens,
@@ -73,7 +75,8 @@ public class AuthService(
         };
 
         await users.AddAsync(user, ct);
-        await IssueEmailVerificationAsync(user, business, ct);
+        var shopOrigins = string.IsNullOrWhiteSpace(business.ShopDomain) ? [] : new[] { business.ShopDomain };
+        await IssueEmailVerificationAsync(user, business, request.RedirectBaseUrl, shopOrigins, ct);
 
         if (RequireEmailVerification)
         {
@@ -115,18 +118,17 @@ public class AuthService(
         await refreshTokens.UpdateAsync(stored, ct);
     }
 
-    public async Task RequestPasswordResetAsync(string email, CancellationToken ct = default)
+    public async Task RequestPasswordResetAsync(string email, string? redirectBaseUrl = null, CancellationToken ct = default)
     {
         var user = await users.FindOneAsync(u => u.Email == email && u.Role != UserRole.Customer, ct);
         if (user is not null)
         {
-            // BackOffice/Platform staff aren't scoped to a single storefront, so there's no
-            // Business to brand this with — IssuePasswordResetAsync falls back to generic branding.
-            await IssuePasswordResetAsync(user, null, ct);
+            var (business, allowedOrigins) = await ResolveStaffRealmAsync(user, ct);
+            await IssuePasswordResetAsync(user, business, redirectBaseUrl, allowedOrigins, ct);
         }
     }
 
-    public async Task RequestStorefrontPasswordResetAsync(string businessSlug, string email, CancellationToken ct = default)
+    public async Task RequestStorefrontPasswordResetAsync(string businessSlug, string email, string? redirectBaseUrl = null, CancellationToken ct = default)
     {
         Business? business;
         try
@@ -143,7 +145,8 @@ public class AuthService(
             u => u.Email == email && u.BusinessId == business.Id && u.Role == UserRole.Customer, ct);
         if (user is not null)
         {
-            await IssuePasswordResetAsync(user, business, ct);
+            var allowedOrigins = string.IsNullOrWhiteSpace(business.ShopDomain) ? [] : new[] { business.ShopDomain };
+            await IssuePasswordResetAsync(user, business, redirectBaseUrl, allowedOrigins, ct);
         }
     }
 
@@ -210,7 +213,10 @@ public class AuthService(
         }
 
         var business = string.IsNullOrEmpty(user.BusinessId) ? null : await businesses.GetByIdAsync(user.BusinessId, ct);
-        await IssueEmailVerificationAsync(user, business, ct);
+        // No request body on this endpoint (resend is a bare authenticated POST) — no
+        // client-supplied origin to validate, so this always falls back to PublicBaseUrl regardless
+        // of allowed origins.
+        await IssueEmailVerificationAsync(user, business, null, [], ct);
     }
 
     public async Task VerifyEmailAsync(string token, CancellationToken ct = default)
@@ -245,7 +251,7 @@ public class AuthService(
         await emailVerificationTokens.UpdateAsync(stored, ct);
     }
 
-    private async Task IssueEmailVerificationAsync(AppUser user, Business? business, CancellationToken ct)
+    private async Task IssueEmailVerificationAsync(AppUser user, Business? business, string? redirectBaseUrl, IReadOnlyList<string> allowedOrigins, CancellationToken ct)
     {
         // Any previously issued token is retired first, so a resend genuinely replaces the old
         // link rather than leaving several live at once.
@@ -271,9 +277,10 @@ public class AuthService(
 
         try
         {
-            var link = $"{platformSettings.PublicBaseUrl.TrimEnd('/')}/verify-email?token={Uri.EscapeDataString(tokenValue)}";
+            business = BusinessAssetUrls.ResolveLogo(business, platformSettings.ApiBaseUrl);
+            var link = $"{ResolveLinkBase(redirectBaseUrl, allowedOrigins).TrimEnd('/')}/verify-email?token={Uri.EscapeDataString(tokenValue)}";
             var (subject, plainBody, htmlBody) = EmailTemplates.VerifyEmail(business, user.FullName, link, expiresAt);
-            await notificationService.NotifyAsync(new NotificationMessage(user.Email, subject, plainBody, htmlBody), ct);
+            await notificationService.NotifyAsync(new NotificationMessage(user.Email, subject, plainBody, htmlBody, BusinessId: business?.Id), ct);
         }
         catch
         {
@@ -285,7 +292,7 @@ public class AuthService(
     internal static string GenerateUnsubscribeToken() =>
         Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
 
-    private async Task IssuePasswordResetAsync(AppUser user, Business? business, CancellationToken ct)
+    private async Task IssuePasswordResetAsync(AppUser user, Business? business, string? redirectBaseUrl, IReadOnlyList<string> allowedOrigins, CancellationToken ct)
     {
         var tokenValue = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
         var expiresAt = DateTime.UtcNow.Add(PasswordResetTokenLifetime);
@@ -297,9 +304,106 @@ public class AuthService(
             ExpiresAt = expiresAt
         }, ct);
 
-        var link = $"{platformSettings.PublicBaseUrl.TrimEnd('/')}/reset-password?token={Uri.EscapeDataString(tokenValue)}";
+        business = BusinessAssetUrls.ResolveLogo(business, platformSettings.ApiBaseUrl);
+        var link = $"{ResolveLinkBase(redirectBaseUrl, allowedOrigins).TrimEnd('/')}/reset-password?token={Uri.EscapeDataString(tokenValue)}";
         var (subject, plainBody, htmlBody) = EmailTemplates.PasswordReset(business, user.FullName, link, expiresAt);
-        await notificationService.NotifyAsync(new NotificationMessage(user.Email, subject, plainBody, htmlBody), ct);
+        await notificationService.NotifyAsync(new NotificationMessage(user.Email, subject, plainBody, htmlBody, BusinessId: business?.Id), ct);
+    }
+
+    /// <summary>
+    /// Maps a non-Customer AppUser to the Business/Tenant it's scoped to and the domain(s) that
+    /// govern which redirectBaseUrl origin is trusted for their emailed links — see
+    /// ResolveLinkBase. Every realm's trust anchor is now a dynamic, API-settable field rather than
+    /// static config, so onboarding a new BackOffice/SuperOffice origin never requires an env edit
+    /// or redeploy — except PlatformSuperAdmin, which has no Business or Tenant above it and no one
+    /// but Platform config itself positioned to set one, so it alone still reads
+    /// Platform:AllowedFrontendOrigins.
+    /// </summary>
+    private async Task<(Business? Business, IReadOnlyList<string> AllowedOrigins)> ResolveStaffRealmAsync(AppUser user, CancellationToken ct)
+    {
+        switch (user.Role)
+        {
+            case UserRole.PlatformSuperAdmin:
+                return (null, platformSettings.AllowedFrontendOrigins);
+
+            case UserRole.TenantOwner:
+                var tenant = await tenants.GetByIdAsync(user.TenantId, ct);
+                var tenantOrigins = string.IsNullOrWhiteSpace(tenant?.SuperOfficeDomain) ? [] : new[] { tenant!.SuperOfficeDomain! };
+                return (null, tenantOrigins);
+
+            default: // BusinessAdmin, BusinessStaff, DeliveryAgent
+                var business = string.IsNullOrEmpty(user.BusinessId) ? null : await businesses.GetByIdAsync(user.BusinessId, ct);
+                var businessOrigins = string.IsNullOrWhiteSpace(business?.BackOfficeDomain) ? [] : new[] { business!.BackOfficeDomain! };
+                return (business, businessOrigins);
+        }
+    }
+
+    /// <summary>
+    /// Picks the base URL a customer/staff-facing link (verify-email, reset-password) actually
+    /// points at, in priority order:
+    /// <list type="number">
+    /// <item>
+    /// <paramref name="redirectBaseUrl"/> — whatever the caller claims is its own origin (e.g. a
+    /// frontend sending <c>window.location.origin</c>) — <strong>but only if it exactly matches
+    /// one of <paramref name="allowedOrigins"/></strong>. Never trusted outright: honoring an
+    /// unvalidated client-supplied redirect target on a password-reset email is a real
+    /// account-takeover vector (an attacker requests a reset for the victim's email with their
+    /// own domain as the target; the victim's real reset token gets emailed pointing at the
+    /// attacker's phishing page, which relays it back to this API to actually change the
+    /// password) — same class of bug as an open redirect, just delivered by email instead of a
+    /// 302.
+    /// </item>
+    /// <item>
+    /// The realm's own configured domain — the first of <paramref name="allowedOrigins"/> — used
+    /// as-is when no <paramref name="redirectBaseUrl"/> was sent or it didn't match. This is the
+    /// actual default the caller should see day to day: SuperOffice/Platform set these domains
+    /// (<c>Business.ShopDomain</c>/<c>BackOfficeDomain</c>, <c>TenantAccount.SuperOfficeDomain</c>)
+    /// specifically so links resolve correctly without every single request having to also supply
+    /// its own origin — no poisoning risk here, since these values come from an authenticated
+    /// SuperOffice/Platform write, never from the caller of this particular request.
+    /// </item>
+    /// <item>
+    /// The platform's static <c>PublicBaseUrl</c> — true last resort, only reached when neither
+    /// of the above is available (e.g. nothing has configured this realm's domain yet).
+    /// </item>
+    /// </list>
+    /// </summary>
+    private string ResolveLinkBase(string? redirectBaseUrl, IReadOnlyList<string> allowedOrigins)
+    {
+        var configuredDefault = allowedOrigins.Count > 0 ? NormalizeOrigin(allowedOrigins[0]) : platformSettings.PublicBaseUrl;
+
+        if (string.IsNullOrWhiteSpace(redirectBaseUrl) || !Uri.TryCreate(redirectBaseUrl, UriKind.Absolute, out var candidate))
+        {
+            return configuredDefault;
+        }
+
+        foreach (var allowed in allowedOrigins)
+        {
+            if (Uri.TryCreate(NormalizeOrigin(allowed), UriKind.Absolute, out var allowedUri)
+                && string.Equals(candidate.Scheme, allowedUri.Scheme, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(candidate.Host, allowedUri.Host, StringComparison.OrdinalIgnoreCase)
+                && candidate.Port == allowedUri.Port)
+            {
+                return $"{candidate.Scheme}://{candidate.Authority}";
+            }
+        }
+
+        return configuredDefault;
+    }
+
+    /// <summary>
+    /// A domain as SuperOffice/Platform typed it into a form — "antivaly.com",
+    /// "http://localhost:5274" — normalized to a real origin string. Defaults to
+    /// <c>https://</c> when no scheme was given, so a local dev domain (an http-only Vite/CRA
+    /// dev server) must be entered with its scheme explicit to avoid an unwanted https upgrade.
+    /// </summary>
+    private static string NormalizeOrigin(string domain)
+    {
+        var withScheme = domain.StartsWith("http://", StringComparison.OrdinalIgnoreCase) || domain.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
+            ? domain
+            : "https://" + domain;
+
+        return Uri.TryCreate(withScheme, UriKind.Absolute, out var uri) ? $"{uri.Scheme}://{uri.Authority}" : withScheme;
     }
 
     private async Task<AuthResponse> AuthenticateAsync(AppUser user, string password, string ip, CancellationToken ct)

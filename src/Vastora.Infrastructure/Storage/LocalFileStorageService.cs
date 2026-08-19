@@ -24,6 +24,12 @@ public class LocalFileStorageService : IFileStorageService
         await using var fileStream = File.Create(filePath);
         await content.CopyToAsync(fileStream, ct);
 
+        // Deliberately host-relative, not absolute: baking today's host into the stored value
+        // would freeze it to whatever domain happened to be current at upload time (a dev
+        // tunnel, a staging host, ...) — wrong the moment that domain changes, and silently so,
+        // since nothing re-writes old rows. Whoever needs an absolute URL (BusinessAssetUrls, for
+        // the one consumer — outbound email — that has no implicit base to resolve against)
+        // resolves this against the *current* base at read time instead.
         return $"/uploads/{businessId}/{fileName}";
     }
 }

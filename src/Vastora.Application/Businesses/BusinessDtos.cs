@@ -8,7 +8,8 @@ public record BusinessResponse(
     string TenantId,
     string Name,
     string Slug,
-    string? CustomDomain,
+    string? ShopDomain,
+    string? BackOfficeDomain,
     string Description,
     string LogoUrl,
     string BannerUrl,
@@ -62,6 +63,38 @@ public record UpdateBusinessRequest(
     bool? GuestCheckoutEnabled = null);
 
 public record UpdateDeliveryModuleRequest(bool Enabled);
+
+/// <summary>
+/// SuperOffice-only. Sets both domains a Business is reachable at — a real production domain, or a
+/// dev tunnel (ngrok, etc.) while testing. Each is independently optional (send null/empty to clear
+/// it); a caller resubmits both current values as a normal settings form, not a partial patch.
+/// <see cref="ShopDomain"/> resolves <see cref="Business.LogoUrl"/>/<see cref="Business.BannerUrl"/>
+/// to absolute URLs for outbound email (<c>BusinessAssetUrls</c>) and validates a Customer's own
+/// redirectBaseUrl; <see cref="BackOfficeDomain"/> validates a BusinessAdmin/BusinessStaff/
+/// DeliveryAgent's redirectBaseUrl. See <c>AuthService.ResolveLinkBase</c>.
+/// </summary>
+public record UpdateBusinessDomainsRequest(string? ShopDomain, string? BackOfficeDomain);
+
+/// <summary>SuperOffice-only. Password is never echoed back — see <see cref="BusinessMailSettingsResponse"/>.</summary>
+public record UpdateBusinessMailSettingsRequest(
+    bool Enabled,
+    string Host,
+    int Port,
+    string Username,
+    /// <summary>Omit (null/empty) to leave the currently stored password unchanged — lets a caller edit Host/From without re-entering credentials.</summary>
+    string? Password,
+    string FromAddress,
+    string FromName);
+
+/// <summary><see cref="HasPassword"/> tells the SuperOffice UI whether a credential is already on file, without ever exposing it.</summary>
+public record BusinessMailSettingsResponse(
+    bool Enabled,
+    string Host,
+    int Port,
+    string Username,
+    bool HasPassword,
+    string FromAddress,
+    string FromName);
 
 /// <summary>
 /// Platform-only. <see cref="ConfirmSlug"/> must match the target Business's slug exactly — the

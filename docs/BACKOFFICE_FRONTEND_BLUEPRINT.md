@@ -143,12 +143,28 @@ that somehow comes back, and apply the Business-match check from §3).
 - Refresh token 30 days, **rotates on every refresh** — always persist the newest one.
 - `POST /api/auth/refresh` with `{ refreshToken }` → new `AuthResponse`.
 - `POST /api/auth/logout` with `{ refreshToken }` → revokes it, 204.
-- `POST /api/auth/forgot-password` `{ email }` / `POST /api/auth/reset-password`
+- `POST /api/auth/forgot-password` `{ email, redirectBaseUrl? }` / `POST /api/auth/reset-password`
   `{ token, newPassword }` (added 2026-08-15, main blueprint §9.10) — always 204s regardless of
   whether the email matches an account, and a successful reset revokes every active session for
-  that user (including the device that requested it). No real email delivery yet — the reset
-  token is currently only visible in the backend's server log, so this flow isn't usable by a
-  real end user until an email/SMS provider is wired in.
+  that user (including the device that requested it).
+- **Send `redirectBaseUrl: window.location.origin` on `forgot-password`, added 2026-08-19.**
+  The email needs to link back to *this* app's `/reset-password` page — without it, the backend
+  falls back to a single configured default that may not match wherever this particular
+  deployment/environment is actually running.
+  - **`BusinessAdmin`/`BusinessStaff`/`DeliveryAgent`** — **updated 2026-08-19: no longer static
+    config.** Only honored if it exactly matches that staff member's own Business's
+    `backOfficeDomain`, which the Business's SuperOffice sets per-Business (SuperOffice blueprint
+    §6.3) — dynamically, no config edit or redeploy. If the reset link isn't landing here for a
+    given Business, that Business's `backOfficeDomain` hasn't been set (or was set to a different
+    address) — that's a SuperOffice-side fix, not a config file this app's own team can touch.
+    Note this is deliberately a *different* field from that Business's customer-facing
+    `shopDomain` — a Business's Shop address is never a valid staff-reset target.
+  - **`PlatformSuperAdmin`**, if this JWT is ever used to sign into a Platform console instead of
+    this app, is the one role still on static config (`Platform:AllowedFrontendOrigins`) — there's
+    no Tenant/Business above Platform to set it dynamically. Not this app's concern in practice.
+
+  A value that doesn't match either is silently ignored (falls back to the configured default),
+  not an error — safe to always send it regardless of role.
 
 Storage: `localStorage` for both tokens (foundation-phase pragmatic choice — see the
 SuperOffice blueprint §4 for the same caveat, it applies identically here). Wrap the API
@@ -220,7 +236,7 @@ real dashboard and CSV import/export. They are documented in §7.11–§7.16 bel
 | POST | `/api/auth/login` | `{ email, password }` | `AuthResponse` |
 | POST | `/api/auth/refresh` | `{ refreshToken }` | `AuthResponse` |
 | POST | `/api/auth/logout` | `{ refreshToken }` | 204 |
-| POST | `/api/auth/forgot-password` | `{ email }` | 204 |
+| POST | `/api/auth/forgot-password` | `{ email, redirectBaseUrl? }` | 204 |
 | POST | `/api/auth/reset-password` | `{ token, newPassword }` | 204 |
 | GET | `/api/auth/me` | — | `UserSummaryResponse` |
 | PUT | `/api/auth/me` | `{ fullName, phone }` | `UserSummaryResponse` |
@@ -266,7 +282,9 @@ actually bite in BackOffice (products, staff) show up as 409s instead.
 
 ```ts
 type BusinessResponse = {
-  id: string; tenantId: string; name: string; slug: string; customDomain: string | null;
+  id: string; tenantId: string; name: string; slug: string;
+  shopDomain: string | null;       // renamed from customDomain 2026-08-19 — SuperOffice-only, read-only here
+  backOfficeDomain: string | null; // added 2026-08-19 — SuperOffice-only, read-only here; validates this app's own redirectBaseUrl (§4)
   description: string; logoUrl: string; bannerUrl: string; themeColor: string;
   currency: string; contactEmail: string; contactPhone: string;
   status: "Draft" | "Active" | "Suspended";
@@ -326,6 +344,17 @@ same shape as product images (§7.4): one `multipart/form-data` field named `fil
 `IFileStorageService`. Each returns the full updated `BusinessResponse`, not just the new URL —
 use `.logoUrl`/`.bannerUrl` off the response to update the preview immediately rather than
 re-fetching the Business.
+
+**`logoUrl`/`bannerUrl` are, and stay, host-relative — `/uploads/{businessId}/{file}` — by
+design (settled 2026-08-19, reversing a same-day attempt to make them absolute at upload time).
+This app is expected to resolve them against its own known API base URL before rendering an
+`<img>`, same as it already needs to for `GET /uploads/{businessId}/{file}` generally — keep
+doing that. Baking an absolute URL into the stored value was tried and reverted: it freezes the
+value to whatever host happened to be current at upload time, which breaks the moment that host
+changes (a dev tunnel restarting, a domain migration) with no way to tell from the stored value
+alone that it's now wrong. The one consumer that genuinely has no base URL of its own to resolve
+against — outbound email — resolves relative-to-absolute itself, at send time, in the API
+(`BusinessAssetUrls`, main blueprint §9.10); this app doesn't need to do anything for that case.
 
 ### 7.3 Categories — `/api/businesses/{businessId}/categories`
 

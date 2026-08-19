@@ -51,7 +51,7 @@ public class DiscountEmailServiceTests
         businesses.Seed(new Business { Id = "biz-1", Currency = "USD" });
         var notifications = new RecordingNotificationService();
 
-        var service = new DiscountEmailService(coupons, promotions, groups, users, businesses, notifications);
+        var service = new DiscountEmailService(coupons, promotions, groups, users, businesses, notifications, new PlatformSettingsStub());
         return (service, notifications, users, groups);
     }
 

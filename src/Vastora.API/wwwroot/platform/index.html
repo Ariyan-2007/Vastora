@@ -525,6 +525,10 @@
         "<label>Type</label>" +
         "<div class=\"field-row\"><select id=\"typeSelect\">" + optionsHtml(TYPE_OPTIONS, tenant.type) + "</select><button data-action=\"type\">Save</button></div>" +
         "<div class=\"hint\">Type change is Single↔MultiBusiness account-shape only — no self-serve flow exists yet.</div>" +
+        "<div style=\"height:12px;\"></div>" +
+        "<label>SuperOffice domain</label>" +
+        "<div class=\"field-row\"><input type=\"text\" id=\"superOfficeDomainInput\" value=\"" + escapeHtml(tenant.superOfficeDomain || "") + "\" placeholder=\"e.g. office.antivaly.com\"><button data-action=\"superOfficeDomain\">Save</button></div>" +
+        "<div class=\"hint\">Where this Tenant's SuperOffice actually runs — validates the redirect link on the owner's own password-reset email. Deliberately set here, not by the TenantOwner themselves: if their account is the one locked out, they can't be the one who fixes where the reset link points. Leave blank to clear.</div>" +
       "</div>" +
       "<div class=\"section\">" +
         "<h3>Businesses</h3>" +
@@ -686,8 +690,11 @@
       } else if (field === "type") {
         const value = el("typeSelect").value;
         await api("/api/platform/tenants/" + tenantId + "/type", { method: "PATCH", body: JSON.stringify({ type: value }) });
+      } else if (field === "superOfficeDomain") {
+        const value = el("superOfficeDomainInput").value.trim();
+        await api("/api/platform/tenants/" + tenantId + "/superoffice-domain", { method: "PATCH", body: JSON.stringify({ superOfficeDomain: value || null }) });
       }
-      toast(enumLabel(field) + " updated.", "ok");
+      toast((field === "superOfficeDomain" ? "SuperOffice domain" : enumLabel(field)) + " updated.", "ok");
       await loadTenants();
       openDrawer(tenantId);
     } catch (e) {

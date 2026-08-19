@@ -1,3 +1,4 @@
+using Vastora.Application.Businesses;
 using Vastora.Application.Common;
 using Vastora.Application.Common.Exceptions;
 using Vastora.Application.Common.Interfaces;
@@ -95,7 +96,8 @@ public class ReturnService(
     IGiftCardService giftCardService,
     ITaxService taxService,
     INotificationService notificationService,
-    IWebhookPublisher webhookPublisher) : IReturnService
+    IWebhookPublisher webhookPublisher,
+    IPlatformSettings platformSettings) : IReturnService
 {
     public async Task<ReturnResponse> RequestAsync(string tenantId, string businessId, string customerUserId, CreateReturnRequest request, CancellationToken ct = default)
     {
@@ -597,9 +599,9 @@ public class ReturnService(
             var order = await orders.GetByIdAsync(entity.OrderId, ct);
             if (!string.IsNullOrWhiteSpace(order?.ContactEmail))
             {
-                var business = await businesses.GetByIdAsync(entity.BusinessId, ct);
+                var business = BusinessAssetUrls.ResolveLogo(await businesses.GetByIdAsync(entity.BusinessId, ct), platformSettings.ApiBaseUrl);
                 var (subject, plainBody, htmlBody) = buildMessage(business);
-                await notificationService.NotifyAsync(new NotificationMessage(order.ContactEmail, subject, plainBody, htmlBody), ct);
+                await notificationService.NotifyAsync(new NotificationMessage(order.ContactEmail, subject, plainBody, htmlBody, BusinessId: entity.BusinessId), ct);
             }
         }
         catch

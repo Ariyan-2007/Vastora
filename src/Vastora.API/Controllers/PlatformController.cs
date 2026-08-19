@@ -76,6 +76,18 @@ public class PlatformController(
         return Ok(result);
     }
 
+    /// <summary>
+    /// The address this Tenant's SuperOffice is reachable at. Platform-only (not TenantOwner
+    /// self-service): if a TenantOwner's own account is locked out, Platform is who fixes where
+    /// their password-reset link points. See AuthService.ResolveLinkBase.
+    /// </summary>
+    [HttpPatch("{tenantId}/superoffice-domain")]
+    public async Task<ActionResult<TenantResponse>> UpdateSuperOfficeDomain(string tenantId, UpdateTenantSuperOfficeDomainRequest request, CancellationToken ct)
+    {
+        var result = await tenantService.UpdateSuperOfficeDomainAsync(tenantId, request, ct);
+        return Ok(result);
+    }
+
     /// <summary>Every Business under this Tenant, any status — the same list a TenantOwner sees in SuperOffice.</summary>
     [HttpGet("{tenantId}/businesses")]
     public async Task<ActionResult<List<BusinessResponse>>> GetBusinesses(string tenantId, CancellationToken ct)

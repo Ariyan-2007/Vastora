@@ -18,6 +18,9 @@ public interface ITenantService
     /// <summary>Single→MultiBusiness upgrade (or the reverse, if the Tenant owns at most one Business) — §9.4.</summary>
     Task<TenantResponse> UpdateTypeAsync(string tenantId, TenantType type, CancellationToken ct = default);
 
+    /// <summary>Platform only — sets TenantAccount.SuperOfficeDomain (§9.10 domain management).</summary>
+    Task<TenantResponse> UpdateSuperOfficeDomainAsync(string tenantId, UpdateTenantSuperOfficeDomainRequest request, CancellationToken ct = default);
+
     /// <summary>Usage vs. plan limits (§9.9) — every Business under the Tenant, plus its staff/product counts.</summary>
     Task<TenantUsageResponse> GetUsageAsync(string tenantId, CancellationToken ct = default);
 }

@@ -14,6 +14,7 @@ public record TenantResponse(
     string OwnerUserId,
     string ContactEmail,
     string ContactPhone,
+    string? SuperOfficeDomain,
     DateTime CreatedAt);
 
 /// <summary>
@@ -38,6 +39,14 @@ public record UpdateTenantStatusRequest(TenantStatus Status);
 public record UpdateTenantPlanRequest(SubscriptionPlan Plan);
 
 public record UpdateTenantTypeRequest(TenantType Type);
+
+/// <summary>
+/// Platform-only — not a TenantOwner self-service field. Sets the address this Tenant's SuperOffice
+/// is reachable at, so a TenantOwner's own password-reset link resolves correctly (see
+/// AuthService.ResolveLinkBase). Kept out of TenantOwner's own reach deliberately: if their account
+/// is the one locked out, Platform is who needs to be able to fix where the reset link points.
+/// </summary>
+public record UpdateTenantSuperOfficeDomainRequest(string? SuperOfficeDomain);
 
 /// <summary>Current usage vs. the plan's per-Business limits (§9.9) for one Business under a Tenant.</summary>
 public record BusinessUsageResponse(

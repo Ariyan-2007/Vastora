@@ -84,18 +84,23 @@ registration/login and public catalog browsing use the `{slug}` in the path.
   one after every refresh call.
 - `POST /api/auth/refresh` with `{ refreshToken }`, `POST /api/auth/logout` with the same.
 - **Password reset (added 2026-08-15, main blueprint §9.10):**
-  `POST /api/shop/{slug}/auth/forgot-password` `{ email }` always 204s regardless of whether the
-  email matches a Customer account on this Business — don't build a UI that reveals which.
-  `POST /api/auth/reset-password` `{ token, newPassword }` (not slug-rooted — shared across
-  every realm on the platform, the token itself identifies the account) completes it and
-  revokes every active session for that customer. The email itself is a real branded HTML
-  template now (added 2026-08-17, §9.10) — the Business's logo/name/brand color if this is a
-  storefront account, generic Vastora branding for a BackOffice/Platform one — built around a
-  working `{PublicBaseUrl}/reset-password?token=...` link, not a bare token to copy-paste.
-  **Still no real delivery provider is configured by default** — until a deployment sets
-  `Smtp:Host`, this (like every other email) only ever reaches the backend's own server log, so
-  the flow isn't usable by a real customer yet; still worth building the UI, it's ready the day
-  SMTP is configured.
+  `POST /api/shop/{slug}/auth/forgot-password` `{ email, redirectBaseUrl? }` always 204s
+  regardless of whether the email matches a Customer account on this Business — don't build a UI
+  that reveals which. `POST /api/auth/reset-password` `{ token, newPassword }` (not slug-rooted —
+  shared across every realm on the platform, the token itself identifies the account) completes
+  it and revokes every active session for that customer. The email itself is a real branded HTML
+  template (added 2026-08-17, redesigned 2026-08-19, §9.10) — the Business's logo/name/brand
+  color if this is a storefront account, generic Vastora branding for a BackOffice/Platform one —
+  built around a working `/reset-password?token=...` link, not a bare token to copy-paste.
+- **Send `redirectBaseUrl: window.location.origin` on both `forgot-password` and `register`,
+  added 2026-08-19.** This is what makes the reset/verify link actually point back at *this*
+  storefront rather than a platform-wide default — necessary here specifically because each
+  Business can have its own domain (`Business.shopDomain`, renamed from `customDomain` same day —
+  SuperOffice-set, dynamically, via `PATCH /api/superoffice/businesses/{id}/domains`, no config
+  edit or redeploy needed on the backend). Sent on `register` too — it's what the verify-email
+  link uses. Only honored if it exactly matches this Business's own `shopDomain`; otherwise
+  silently falls back to the platform default, no error — safe to always send it, and worth asking
+  SuperOffice to set this Business's `shopDomain` if the emailed links aren't landing on this app.
 
 **Storage:** for a Next.js app, prefer storing tokens in an httpOnly cookie set by a Next.js
 Route Handler that proxies the login/refresh calls, rather than `localStorage` — this app is
@@ -142,7 +147,7 @@ Base URL = `NEXT_PUBLIC_API_BASE_URL`. `{slug}` = `NEXT_PUBLIC_BUSINESS_SLUG`.
 |---|---|---|---|---|
 | POST | `/api/shop/{slug}/auth/register` | none | `StorefrontRegisterRequest` | `AuthResponse` |
 | POST | `/api/shop/{slug}/auth/login` | none | `StorefrontLoginRequest` | `AuthResponse` |
-| POST | `/api/shop/{slug}/auth/forgot-password` | none | `{ email }` | 204 |
+| POST | `/api/shop/{slug}/auth/forgot-password` | none | `{ email, redirectBaseUrl? }` | 204 |
 | POST | `/api/auth/reset-password` | none | `{ token, newPassword }` | 204 |
 | POST | `/api/auth/refresh` | none | `{ refreshToken }` | `AuthResponse` |
 | POST | `/api/auth/logout` | none | `{ refreshToken }` | 204 |
@@ -179,7 +184,7 @@ there's no default image server-side.
 **Unsubscribe is login-free by design (§9.36).** `POST /api/auth/unsubscribe/{token}` takes `AppUser.UnsubscribeToken` (present on `CustomerDataExport`, and echoed as the last path segment of the unsubscribe link built into marketing emails — abandoned-cart, back-in-stock, review-request) and always 204s, valid token or not, so the link can never be used to probe for account existence. Land it on a simple confirmation page; there's nothing to display beyond "you're unsubscribed."
 
 ```ts
-type StorefrontRegisterRequest = { fullName: string; email: string; password: string; phone: string };
+type StorefrontRegisterRequest = { fullName: string; email: string; password: string; phone: string; redirectBaseUrl?: string };
 type StorefrontLoginRequest = { email: string; password: string };
 
 type AuthResponse = {
@@ -254,7 +259,9 @@ render them as chips — clicking one is just navigating to `?categoryId=<that i
 
 ```ts
 type BusinessResponse = {
-  id: string; tenantId: string; name: string; slug: string; customDomain: string | null;
+  id: string; tenantId: string; name: string; slug: string;
+  shopDomain: string | null;       // renamed from customDomain 2026-08-19 — see the redirectBaseUrl note above
+  backOfficeDomain: string | null; // added 2026-08-19 — not this app's concern, see BackOffice/SuperOffice blueprints
   description: string; logoUrl: string; bannerUrl: string; themeColor: string;
   currency: string; contactEmail: string; contactPhone: string;
   status: "Draft" | "Active" | "Suspended";
